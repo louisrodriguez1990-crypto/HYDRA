@@ -1,12 +1,6 @@
-import { callModel } from "./openrouter";
+import { call } from "./openrouter";
 import { MODELS } from "./models";
-import type OpenAI from "openai";
 
-export async function executeFast(
-  messages: OpenAI.Chat.ChatCompletionMessageParam[]
-): Promise<string> {
-  return callModel(MODELS.fast.id, messages, {
-    maxTokens: 2048,
-    temperature: 0.7,
-  });
+export async function fast(messages: { role: string; content: string }[]): Promise<string> {
+  return call(MODELS.fast.id, messages, { maxTokens: 2048 });
 }

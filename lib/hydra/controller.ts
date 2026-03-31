@@ -1,51 +1,37 @@
-import { callModel } from "./openrouter";
+import { call, parseJSON } from "./openrouter";
 import { MODELS } from "./models";
 
-export type Topology = "fast" | "reasoning" | "code" | "creative" | "full";
+export type Topology = "fast" | "think" | "discover";
 
-export interface ExecutionPlan {
+export interface Plan {
   topology: Topology;
   complexity: number;
-  reasoning: string;
 }
 
-const CLASSIFIER_PROMPT = `You are the Hydra query classifier. Analyze the user's message and output ONLY valid JSON with no markdown fences.
+export function quickClassify(msg: string): Topology | null {
+  const m = msg.toLowerCase().trim();
+  if (m.length < 30 && !m.includes("?")) return "fast";
+  if (/^(hi|hello|hey|thanks|ok|cool|got it|sure)\b/i.test(m)) return "fast";
+  if (/```|def |function |const |import |class |\.(py|js|ts|tsx|rs|go)\b/.test(msg)) return "think";
+  if (/\b(novel|new approach|no one|nobody|first principles|unconventional|outside the box|rethink|reimagine|invent|breakthrough|paradigm|innovative|what if we)\b/i.test(m)) return "discover";
+  return null;
+}
 
-Decide:
-- "complexity": 0.0 to 1.0 (how hard is this query?)
-- "topology": one of "fast", "reasoning", "code", "creative", "full"
-- "reasoning": one sentence explaining why
+const CLASSIFY_PROMPT = `Classify this query. Output ONLY JSON, no fences.
+- "fast": simple factual, greetings, short answers
+- "think": analysis, reasoning, code, math, explanations, comparisons, hard questions
+- "discover": novel solutions, new approaches, creative problem-solving, first-principles rethinking, "how might we" questions
+Output: {"topology":"fast|think|discover","complexity":0.X}`;
 
-Rules:
-- "fast" (complexity < 0.3): Simple factual questions, greetings, definitions, short answers
-- "code" (any complexity): Anything involving writing, debugging, reviewing, or explaining code
-- "creative" (any complexity): Creative writing, storytelling, brainstorming, marketing copy
-- "reasoning" (complexity 0.3-0.7): Analysis, math, logic, comparisons, explanations
-- "full" (complexity > 0.7): PhD-level questions, multi-step reasoning, ambiguous hard problems
+export async function classify(msg: string): Promise<Plan> {
+  const quick = quickClassify(msg);
+  if (quick) return { topology: quick, complexity: quick === "fast" ? 0.1 : 0.6 };
 
-Output format: {"topology":"...","complexity":0.X,"reasoning":"..."}`;
+  const res = await call(
+    MODELS.fast.id,
+    [{ role: "system", content: CLASSIFY_PROMPT }, { role: "user", content: msg }],
+    { maxTokens: 60, temperature: 0.1 }
+  );
 
-export async function classifyQuery(userMessage: string): Promise<ExecutionPlan> {
-  try {
-    const result = await callModel(
-      MODELS.fast.id,
-      [
-        { role: "system", content: CLASSIFIER_PROMPT },
-        { role: "user", content: userMessage },
-      ],
-      { maxTokens: 150, temperature: 0.1 }
-    );
-
-    // Strip markdown fences if present
-    const cleaned = result.replace(/```json\n?|```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
-
-    return {
-      topology: parsed.topology || "fast",
-      complexity: parsed.complexity || 0.5,
-      reasoning: parsed.reasoning || "",
-    };
-  } catch {
-    return { topology: "reasoning", complexity: 0.5, reasoning: "Classification failed, defaulting to reasoning" };
-  }
+  return parseJSON<Plan>(res, { topology: "think", complexity: 0.5 });
 }

@@ -1,60 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
-import { classifyQuery } from "@/lib/hydra/controller";
-import { executeFast } from "@/lib/hydra/engine-fast";
-import { executeReasoning } from "@/lib/hydra/engine-reasoning";
-import { executeCode } from "@/lib/hydra/engine-code";
-import { executeCreative } from "@/lib/hydra/engine-creative";
-import { executeFull } from "@/lib/hydra/engine-full";
-import type OpenAI from "openai";
+import { classify } from "@/lib/hydra/controller";
+import { fast } from "@/lib/hydra/engine-fast";
+import { think } from "@/lib/hydra/engine-think";
+import { discover } from "@/lib/hydra/engine-discover";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
     const { messages } = await req.json();
-    const lastMessage = messages[messages.length - 1].content as string;
+    const last = messages[messages.length - 1].content as string;
+    const plan = await classify(last);
+    const start = Date.now();
 
-    const plan = await classifyQuery(lastMessage);
-    console.log(
-      `[Hydra] Topology: ${plan.topology} | Complexity: ${plan.complexity} | ${plan.reasoning}`
-    );
+    console.log(`[Hydra] ${plan.topology} | complexity: ${plan.complexity}`);
 
-    const typedMessages = messages as OpenAI.Chat.ChatCompletionMessageParam[];
-    let response: string;
-
+    let content: string;
     switch (plan.topology) {
-      case "fast":
-        response = await executeFast(typedMessages);
-        break;
-      case "reasoning":
-        response = await executeReasoning(typedMessages);
-        break;
-      case "code":
-        response = await executeCode(typedMessages, plan.complexity);
-        break;
-      case "creative":
-        response = await executeCreative(typedMessages);
-        break;
-      case "full":
-        response = await executeFull(typedMessages);
-        break;
-      default:
-        response = await executeFast(typedMessages);
+      case "fast":     content = await fast(messages); break;
+      case "think":    content = await think(messages); break;
+      case "discover": content = await discover(messages); break;
+      default:         content = await think(messages);
     }
 
     return NextResponse.json({
-      content: response,
+      content,
       metadata: {
         topology: plan.topology,
         complexity: plan.complexity,
+        latencyMs: Date.now() - start,
       },
     });
   } catch (error) {
     console.error("[Hydra] Error:", error);
-    return NextResponse.json(
-      { error: "Hydra encountered an error. Please try again." },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Hydra encountered an error." }, { status: 500 });
   }
 }

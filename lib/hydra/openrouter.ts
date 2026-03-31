@@ -16,33 +16,31 @@ function getClient(): OpenAI {
   return _client;
 }
 
-export async function callModel(
+export async function call(
   modelId: string,
-  messages: OpenAI.Chat.ChatCompletionMessageParam[],
-  options?: {
-    maxTokens?: number;
-    temperature?: number;
-  }
+  messages: { role: string; content: string }[],
+  opts: { maxTokens?: number; temperature?: number } = {}
 ): Promise<string> {
   const client = getClient();
   try {
-    const response = await client.chat.completions.create({
+    const res = await client.chat.completions.create({
       model: modelId,
-      messages,
-      max_tokens: options?.maxTokens ?? 4096,
-      temperature: options?.temperature ?? 0.7,
+      messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
+      max_tokens: opts.maxTokens ?? 4096,
+      temperature: opts.temperature ?? 0.7,
       stream: false,
     });
-    return response.choices[0]?.message?.content ?? "";
-  } catch (error) {
-    console.error(`Model ${modelId} failed:`, error);
-    // Fallback to the free auto-router
-    const fallback = await client.chat.completions.create({
-      model: "openrouter/auto",
-      messages,
-      max_tokens: options?.maxTokens ?? 4096,
-      stream: false,
-    });
-    return fallback.choices[0]?.message?.content ?? "";
+    return res.choices[0]?.message?.content ?? "";
+  } catch (err) {
+    console.error(`[Hydra] ${modelId} failed:`, err);
+    return "";
+  }
+}
+
+export function parseJSON<T>(raw: string, fallback: T): T {
+  try {
+    return JSON.parse(raw.replace(/```json\n?|```/g, "").trim());
+  } catch {
+    return fallback;
   }
 }

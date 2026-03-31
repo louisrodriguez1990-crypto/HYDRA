@@ -9,20 +9,19 @@ const MUTED = "#525252";
 const DIM = "#a3a3a3";
 const WHITE = "#e5e5e5";
 
-type Topology = "fast" | "reasoning" | "code" | "creative" | "full";
+type Topology = "fast" | "think" | "discover";
 
 interface Message {
   role: "user" | "assistant";
   text: string;
   topology?: Topology;
+  latency?: number;
 }
 
-const TOPOLOGY_LABELS: Record<Topology, string> = {
-  fast: "fast",
-  reasoning: "reasoning",
-  code: "code",
-  creative: "creative",
-  full: "full",
+const TOPOLOGY_COLOR: Record<Topology, string> = {
+  fast:     "#525252",
+  think:    "#1d4ed8",
+  discover: "#92400e",
 };
 
 export default function Hydra() {
@@ -64,9 +63,10 @@ export default function Hydra() {
       }
 
       const topology = data.metadata?.topology as Topology | undefined;
+      const latency = data.metadata?.latencyMs as number | undefined;
       setMessages((m) => [
         ...m,
-        { role: "assistant", text: data.content, topology },
+        { role: "assistant", text: data.content, topology, latency },
       ]);
     } catch {
       setMessages((m) => [
@@ -183,25 +183,24 @@ export default function Hydra() {
               <div
                 style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}
               >
-                <span
-                  style={{ fontSize: 10, color: MUTED, letterSpacing: "0.08em" }}
-                >
+                <span style={{ fontSize: 10, color: MUTED, letterSpacing: "0.08em" }}>
                   HYDRA
                 </span>
                 {msg.topology && (
                   <span
                     style={{
                       fontSize: 9,
-                      color: MUTED,
+                      color: TOPOLOGY_COLOR[msg.topology],
                       letterSpacing: "0.06em",
                       background: SURFACE,
-                      border: `1px solid ${BORDER}`,
+                      border: `1px solid ${TOPOLOGY_COLOR[msg.topology]}44`,
                       borderRadius: 3,
                       padding: "1px 5px",
                       textTransform: "uppercase",
                     }}
                   >
-                    {TOPOLOGY_LABELS[msg.topology]}
+                    {msg.topology}
+                    {msg.latency != null && ` · ${(msg.latency / 1000).toFixed(1)}s`}
                   </span>
                 )}
               </div>
