@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { MODELS } from "./models";
 
 let _client: OpenAI | null = null;
 
@@ -36,9 +37,9 @@ export async function callModel(
     return response.choices[0]?.message?.content ?? "";
   } catch (error) {
     console.error(`Model ${modelId} failed:`, error);
-    // Fallback to the free auto-router
+    // Fallback to the free OSS model
     const fallback = await client.chat.completions.create({
-      model: "openrouter/auto",
+      model: MODELS.fallback.id,
       messages,
       max_tokens: options?.maxTokens ?? 4096,
       stream: false,
