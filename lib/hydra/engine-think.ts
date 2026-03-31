@@ -15,19 +15,19 @@ export async function think(messages: { role: string; content: string }[]): Prom
 
   const [a, b, c] = await Promise.allSettled([
     call(
-      MODELS.reasoner.id,
+      MODELS.broad.id,
       [...ctx, { role: "user", content: `Think step-by-step.\n\n${query}` }],
-      { maxTokens: 6144, temperature: 0.5 }
+      { maxTokens: 3000, temperature: 0.5 }
     ),
     call(
       MODELS.analyst.id,
       [...ctx, { role: "user", content: `Consider multiple approaches, evaluate tradeoffs, then give your best answer.\n\n${query}` }],
-      { maxTokens: 6144, temperature: 0.6 }
+      { maxTokens: 3000, temperature: 0.6 }
     ),
     call(
       MODELS.critic.id,
       [...ctx, { role: "user", content: `First identify the most obvious answer. Then find flaws in it. Then give the most defensible answer.\n\n${query}` }],
-      { maxTokens: 6144, temperature: 0.5 }
+      { maxTokens: 3000, temperature: 0.5 }
     ),
   ]);
 
@@ -46,6 +46,6 @@ export async function think(messages: { role: string; content: string }[]): Prom
       { role: "system", content: SYNTH },
       { role: "user", content: `Question: ${query}\n\n${combined}\n\nSynthesize the best answer.` },
     ],
-    { maxTokens: 8192, temperature: 0.3 }
+    { maxTokens: 3000, temperature: 0.3 }
   );
 }

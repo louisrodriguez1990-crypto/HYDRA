@@ -4,7 +4,7 @@ import { fast } from "@/lib/hydra/engine-fast";
 import { think } from "@/lib/hydra/engine-think";
 import { discover } from "@/lib/hydra/engine-discover";
 
-export const maxDuration = 120;
+export const maxDuration = 60;
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {

@@ -80,19 +80,19 @@ export async function discover(messages: { role: string; content: string }[]): P
 
   const [fp, analogy, inversion, out1, out2] = await Promise.allSettled([
     call(
-      MODELS.reasoner.id,
+      MODELS.analyst.id,
       [{ role: "system", content: FIRST_PRINCIPLES }, { role: "user", content: query }],
-      { maxTokens: 4096, temperature: 0.6 }
+      { maxTokens: 2048, temperature: 0.6 }
     ),
     call(
       MODELS.broad.id,
       [{ role: "system", content: ANALOGIES }, { role: "user", content: query }],
-      { maxTokens: 4096, temperature: 0.8 }
+      { maxTokens: 2048, temperature: 0.8 }
     ),
     call(
-      MODELS.analyst.id,
+      MODELS.critic.id,
       [{ role: "system", content: INVERSION }, { role: "user", content: query }],
-      { maxTokens: 4096, temperature: 0.7 }
+      { maxTokens: 2048, temperature: 0.7 }
     ),
     call(
       MODELS.wild.id,
@@ -100,15 +100,15 @@ export async function discover(messages: { role: string; content: string }[]): P
         { role: "system", content: persona1.prompt },
         { role: "user", content: `Here's the problem:\n\n${query}\n\nWhat solutions come to mind from your background? Be specific and practical.` },
       ],
-      { maxTokens: 3072, temperature: 0.85 }
+      { maxTokens: 2048, temperature: 0.85 }
     ),
     call(
-      MODELS.critic.id,
+      MODELS.fast.id,
       [
         { role: "system", content: persona2.prompt },
         { role: "user", content: `Here's the problem:\n\n${query}\n\nWhat solutions come to mind from your background? Be specific and practical.` },
       ],
-      { maxTokens: 3072, temperature: 0.8 }
+      { maxTokens: 2048, temperature: 0.8 }
     ),
   ]);
 
@@ -121,18 +121,18 @@ export async function discover(messages: { role: string; content: string }[]): P
 
   if (sections.length === 0) {
     return call(
-      MODELS.reasoner.id,
+      MODELS.analyst.id,
       [...messages.slice(0, -1), { role: "user", content: `Think about this from first principles and unconventional angles:\n\n${query}` }],
-      { maxTokens: 6144, temperature: 0.7 }
+      { maxTokens: 3000, temperature: 0.7 }
     );
   }
 
   return call(
-    MODELS.reasoner.id,
+    MODELS.analyst.id,
     [
       { role: "system", content: DISCOVER_SYNTH },
       { role: "user", content: `Question: ${query}\n\n${sections.join("\n\n")}\n\nSynthesize the best insights into a clear, actionable answer.` },
     ],
-    { maxTokens: 8192, temperature: 0.4 }
+    { maxTokens: 3000, temperature: 0.4 }
   );
 }
