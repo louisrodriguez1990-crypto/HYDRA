@@ -10,7 +10,7 @@ export interface ModelConfig {
 
 export const MODELS: Record<string, ModelConfig> = {
   fast: {
-    id: "qwen/qwen3-next-80b-a3b",
+    id: "qwen/qwen3-next-80b-a3b-instruct",
     role: "fast",
     maxTokens: 4096,
     contextWindow: 128000,
@@ -31,7 +31,7 @@ export const MODELS: Record<string, ModelConfig> = {
     supportsStreaming: true,
   },
   coder: {
-    id: "qwen/qwen3-coder-480b-a35b",
+    id: "qwen/qwen3-coder",
     role: "coder",
     maxTokens: 8192,
     contextWindow: 262000,
