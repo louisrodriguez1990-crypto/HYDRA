@@ -8,6 +8,7 @@ import { executeFull } from "@/lib/hydra/engine-full";
 import type OpenAI from "openai";
 
 export const maxDuration = 60;
+export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
