@@ -59,18 +59,18 @@ interface MessageBlock {
 
 const STORAGE_KEY = "hydra.chat.threads.v1";
 const TOPOLOGY_COLOR: Record<Topology, string> = {
-  fast: "#8b93a7",
-  think: "#60a5fa",
-  discover: "#f59e0b",
+  fast: "#a3a3a3",
+  think: "#8ab4ff",
+  discover: "#f6bd60",
 };
 const RIGOR_COPY: Record<Rigor, string> = {
   balanced: "Balanced keeps Hydra fast and flexible.",
   rigorous: "Rigorous adds a verification pass and tighter synthesis.",
 };
 const STATUS_COLOR: Record<Exclude<MessageStatus, "final">, string> = {
-  draft: "#38bdf8",
-  refining: "#f59e0b",
-  fallback: "#f87171",
+  draft: "#7dd3fc",
+  refining: "#f6bd60",
+  fallback: "#fb7185",
 };
 const STATUS_COPY: Record<Exclude<MessageStatus, "final">, string> = {
   draft: "First-pass answer ready.",
@@ -666,41 +666,40 @@ export default function HydraChatApp() {
         * { box-sizing: border-box; }
         body {
           margin: 0;
-          background: #f3f4f6;
-          color: #111827;
+          background: #181818;
+          color: #ececec;
           font-family: "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
         }
         button, textarea { font: inherit; }
-        ::selection { background: rgba(37, 99, 235, 0.18); color: #111827; }
+        ::selection { background: rgba(16, 163, 127, 0.3); color: #f5f5f5; }
         .hydra-app {
           min-height: 100vh;
-          padding: 20px;
-          background: #f3f4f6;
+          padding: 12px;
+          background: #181818;
         }
         .hydra-shell {
-          min-height: calc(100vh - 40px);
+          min-height: calc(100vh - 24px);
           display: grid;
           grid-template-columns: 300px minmax(0, 1fr);
-          border: 1px solid #e5e7eb;
-          border-radius: 24px;
-          background: #ffffff;
-          box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+          border: 1px solid #2d2d2d;
+          border-radius: 18px;
+          background: #212121;
           overflow: hidden;
         }
         .hydra-sidebar {
           display: flex;
           flex-direction: column;
           min-height: 0;
-          padding: 20px;
-          gap: 18px;
-          background: #f8fafc;
-          border-right: 1px solid #e5e7eb;
+          padding: 18px;
+          gap: 16px;
+          background: #171717;
+          border-right: 1px solid #2a2a2a;
         }
         .hydra-main {
           display: grid;
           grid-template-rows: auto minmax(0, 1fr) auto;
           min-height: 0;
-          background: #fcfcfd;
+          background: #212121;
         }
         .hydra-row {
           display: flex;
@@ -709,13 +708,13 @@ export default function HydraChatApp() {
           gap: 12px;
         }
         .hydra-brand {
-          font-size: 20px;
+          font-size: 18px;
           font-weight: 700;
           line-height: 1.2;
-          color: #111827;
+          color: #f5f5f5;
         }
         .hydra-muted {
-          color: #6b7280;
+          color: #a1a1aa;
           font-size: 13px;
           line-height: 1.6;
         }
@@ -724,7 +723,7 @@ export default function HydraChatApp() {
           font-weight: 600;
           letter-spacing: 0.04em;
           text-transform: uppercase;
-          color: #6b7280;
+          color: #7c7c85;
         }
         .hydra-btn,
         .hydra-thread,
@@ -739,15 +738,15 @@ export default function HydraChatApp() {
         .hydra-thread-delete,
         .hydra-action,
         .hydra-send {
-          border: 1px solid #d1d5db;
-          background: #ffffff;
-          color: #111827;
+          border: 1px solid #383838;
+          background: #2a2a2a;
+          color: #f3f4f6;
           border-radius: 12px;
           cursor: pointer;
         }
         .hydra-btn {
           padding: 10px 14px;
-          font-size: 14px;
+          font-size: 13px;
           font-weight: 600;
         }
         .hydra-btn:hover,
@@ -757,17 +756,18 @@ export default function HydraChatApp() {
         .hydra-thread:hover,
         .hydra-chip-btn:hover,
         .hydra-toggle button:hover {
-          border-color: #93c5fd;
-          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.08);
+          border-color: #4a4a4a;
+          background: #323232;
+          box-shadow: none;
         }
         .hydra-btn-primary {
-          background: #2563eb;
-          border-color: #2563eb;
+          background: #10a37f;
+          border-color: #10a37f;
           color: #ffffff;
         }
         .hydra-btn-primary:hover {
-          background: #1d4ed8;
-          border-color: #1d4ed8;
+          background: #0e8f70;
+          border-color: #0e8f70;
         }
         .hydra-thread-list {
           display: flex;
@@ -783,20 +783,20 @@ export default function HydraChatApp() {
           align-items: start;
         }
         .hydra-thread {
-          border: 1px solid #e5e7eb;
-          background: #ffffff;
-          border-radius: 16px;
+          border: 1px solid #2f2f2f;
+          background: #1f1f1f;
+          border-radius: 14px;
           padding: 14px;
           text-align: left;
           cursor: pointer;
         }
         .hydra-thread.is-active {
-          border-color: #bfdbfe;
-          background: #eff6ff;
+          border-color: #454545;
+          background: #2a2a2a;
         }
         .hydra-thread-title {
           display: block;
-          color: #111827;
+          color: #f5f5f5;
           font-size: 14px;
           font-weight: 600;
           line-height: 1.45;
@@ -804,7 +804,7 @@ export default function HydraChatApp() {
         }
         .hydra-thread-snippet {
           display: block;
-          color: #6b7280;
+          color: #9ca3af;
           font-size: 12px;
           line-height: 1.55;
           margin-bottom: 8px;
@@ -813,33 +813,35 @@ export default function HydraChatApp() {
           display: flex;
           flex-wrap: wrap;
           gap: 8px;
-          color: #6b7280;
+          color: #7c7c85;
           font-size: 11px;
         }
         .hydra-thread-delete {
-          padding: 10px 12px;
+          padding: 8px 10px;
           font-size: 12px;
-          color: #6b7280;
+          color: #a1a1aa;
+          background: transparent;
+          border-color: transparent;
         }
         .hydra-head,
         .hydra-compose {
           padding: 20px 24px;
-          background: #ffffff;
+          background: #212121;
         }
         .hydra-head {
-          border-bottom: 1px solid #e5e7eb;
+          border-bottom: 1px solid #2a2a2a;
         }
         .hydra-title {
           margin: 0;
-          font-size: 22px;
+          font-size: 20px;
           line-height: 1.25;
           font-weight: 700;
-          color: #111827;
+          color: #f5f5f5;
         }
         .hydra-subtitle {
           margin: 6px 0 0;
-          color: #6b7280;
-          font-size: 14px;
+          color: #a1a1aa;
+          font-size: 13px;
           line-height: 1.6;
         }
         .hydra-pills {
@@ -853,9 +855,9 @@ export default function HydraChatApp() {
           gap: 6px;
           padding: 6px 10px;
           border-radius: 999px;
-          border: 1px solid #e5e7eb;
-          background: #f9fafb;
-          color: #4b5563;
+          border: 1px solid #353535;
+          background: #262626;
+          color: #c4c4cc;
           font-size: 12px;
           line-height: 1.2;
         }
@@ -878,14 +880,14 @@ export default function HydraChatApp() {
         }
         .hydra-empty-card {
           width: min(720px, 100%);
-          border: 1px solid #e5e7eb;
-          border-radius: 20px;
-          padding: 28px;
-          background: #ffffff;
-          box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+          border: none;
+          border-radius: 0;
+          padding: 12px 0;
+          background: transparent;
+          box-shadow: none;
         }
         .hydra-kicker {
-          color: #2563eb;
+          color: #10a37f;
           font-size: 12px;
           font-weight: 600;
           line-height: 1.4;
@@ -896,11 +898,11 @@ export default function HydraChatApp() {
           font-size: clamp(28px, 4vw, 36px);
           line-height: 1.2;
           letter-spacing: -0.03em;
-          color: #111827;
+          color: #f5f5f5;
         }
         .hydra-empty-copy {
           margin: 14px 0 22px;
-          color: #6b7280;
+          color: #a1a1aa;
           font-size: 15px;
           line-height: 1.7;
           max-width: 58ch;
@@ -911,9 +913,9 @@ export default function HydraChatApp() {
           gap: 12px;
         }
         .hydra-chip-btn {
-          border: 1px solid #e5e7eb;
-          background: #ffffff;
-          color: #111827;
+          border: 1px solid #2f2f2f;
+          background: #262626;
+          color: #f3f4f6;
           border-radius: 16px;
           padding: 14px 16px;
           text-align: left;
@@ -922,7 +924,7 @@ export default function HydraChatApp() {
         }
         .hydra-chip-label {
           display: block;
-          color: #6b7280;
+          color: #9ca3af;
           font-size: 11px;
           font-weight: 600;
           margin-bottom: 10px;
@@ -934,20 +936,23 @@ export default function HydraChatApp() {
           justify-content: flex-end;
         }
         .hydra-card {
-          width: min(100%, 720px);
-          border-radius: 20px;
-          padding: 16px 18px;
-          border: 1px solid #e5e7eb;
-          background: #ffffff;
-          box-shadow: 0 6px 20px rgba(15, 23, 42, 0.04);
+          width: min(100%, 760px);
+          border-radius: 18px;
+          padding: 18px 0;
+          border: none;
+          background: transparent;
+          box-shadow: none;
         }
         .hydra-message.user .hydra-card {
-          background: #eff6ff;
-          border-color: #bfdbfe;
+          width: min(78%, 680px);
+          padding: 14px 16px;
+          background: #303030;
+          border: 1px solid #3a3a3a;
         }
         .hydra-message.error .hydra-card {
-          background: #fff1f2;
-          border-color: #fecdd3;
+          padding: 14px 16px;
+          background: #3a1f24;
+          border: 1px solid #6b2c35;
         }
         .hydra-meta {
           display: flex;
@@ -955,7 +960,7 @@ export default function HydraChatApp() {
           justify-content: space-between;
           gap: 12px;
           margin-bottom: 10px;
-          color: #6b7280;
+          color: #8f8f97;
           font-size: 12px;
           line-height: 1.5;
         }
@@ -972,15 +977,15 @@ export default function HydraChatApp() {
           gap: 6px;
           padding: 4px 8px;
           border-radius: 999px;
-          background: #f9fafb;
-          border: 1px solid #e5e7eb;
-          color: #4b5563;
+          background: #262626;
+          border: 1px solid #363636;
+          color: #c4c4cc;
           font-size: 11px;
           line-height: 1.2;
         }
         .hydra-action {
-          background: #ffffff;
-          color: #4b5563;
+          background: #262626;
+          color: #d4d4d8;
           padding: 7px 10px;
           font-size: 12px;
         }
@@ -993,7 +998,7 @@ export default function HydraChatApp() {
           margin: 0;
           white-space: pre-wrap;
           word-break: break-word;
-          color: #111827;
+          color: #ececec;
           font-size: 15px;
           line-height: 1.75;
         }
@@ -1005,19 +1010,19 @@ export default function HydraChatApp() {
         .hydra-trace {
           margin-top: 14px;
           padding-top: 14px;
-          border-top: 1px solid #e5e7eb;
+          border-top: 1px solid #2a2a2a;
         }
         .hydra-trace-toggle {
           border: none;
           background: transparent;
           padding: 0;
-          color: #2563eb;
+          color: #10a37f;
           font-size: 13px;
           font-weight: 600;
           cursor: pointer;
         }
         .hydra-trace-toggle:hover {
-          color: #1d4ed8;
+          color: #34d399;
         }
         .hydra-trace-panel {
           margin-top: 12px;
@@ -1027,8 +1032,8 @@ export default function HydraChatApp() {
         .hydra-trace-node {
           padding: 12px;
           border-radius: 14px;
-          border: 1px solid #e5e7eb;
-          background: #f8fafc;
+          border: 1px solid #343434;
+          background: #262626;
         }
         .hydra-trace-head {
           display: flex;
@@ -1040,18 +1045,18 @@ export default function HydraChatApp() {
         .hydra-trace-id {
           font-size: 12px;
           font-weight: 700;
-          color: #111827;
+          color: #f5f5f5;
         }
         .hydra-trace-question {
           margin: 0 0 8px;
-          color: #111827;
+          color: #f3f4f6;
           font-size: 14px;
           font-weight: 600;
           line-height: 1.5;
         }
         .hydra-trace-answer {
           margin: 0;
-          color: #4b5563;
+          color: #b6b6bf;
           font-size: 13px;
           line-height: 1.6;
           white-space: pre-wrap;
@@ -1060,43 +1065,43 @@ export default function HydraChatApp() {
         .hydra-code {
           border-radius: 16px;
           overflow: hidden;
-          border: 1px solid #e5e7eb;
-          background: #f8fafc;
+          border: 1px solid #303030;
+          background: #171717;
         }
         .hydra-code-head {
           padding: 8px 12px;
-          color: #6b7280;
+          color: #9ca3af;
           font-size: 11px;
           font-weight: 600;
-          border-bottom: 1px solid #e5e7eb;
-          background: #ffffff;
+          border-bottom: 1px solid #2c2c2c;
+          background: #202020;
         }
         .hydra-code pre {
           margin: 0;
           padding: 14px;
           overflow: auto;
-          color: #111827;
+          color: #ececec;
           font-size: 13px;
           line-height: 1.65;
         }
         .hydra-compose {
-          border-top: 1px solid #e5e7eb;
+          border-top: 1px solid #2a2a2a;
           display: flex;
           flex-direction: column;
-          gap: 14px;
+          gap: 12px;
         }
         .hydra-toggle {
           display: inline-flex;
           gap: 4px;
           padding: 4px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid #303030;
           border-radius: 999px;
-          background: #f9fafb;
+          background: #171717;
         }
         .hydra-toggle button {
           border: none;
           background: transparent;
-          color: #6b7280;
+          color: #9ca3af;
           padding: 8px 12px;
           border-radius: 999px;
           cursor: pointer;
@@ -1104,43 +1109,47 @@ export default function HydraChatApp() {
           font-weight: 600;
         }
         .hydra-toggle button.is-active {
-          background: #ffffff;
-          color: #111827;
-          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+          background: #2b2b2b;
+          color: #f5f5f5;
+          box-shadow: none;
         }
         .hydra-frame {
           display: grid;
           grid-template-columns: minmax(0, 1fr) auto;
           gap: 12px;
           align-items: end;
-          border: 1px solid #d1d5db;
-          border-radius: 18px;
-          background: #ffffff;
-          padding: 14px;
+          border: 1px solid #383838;
+          border-radius: 24px;
+          background: #2b2b2b;
+          padding: 12px 14px;
         }
         .hydra-composer {
           width: 100%;
-          min-height: 48px;
+          min-height: 52px;
           max-height: 220px;
           resize: none;
           border: none;
           outline: none;
           background: transparent;
-          color: #111827;
+          color: #f5f5f5;
           font-size: 15px;
           line-height: 1.7;
         }
         .hydra-composer::placeholder {
-          color: #9ca3af;
+          color: #8b8b95;
         }
         .hydra-send {
-          min-width: 88px;
-          height: 48px;
-          border-radius: 14px;
-          border: 1px solid #2563eb;
-          background: #2563eb;
+          min-width: 84px;
+          height: 44px;
+          border-radius: 999px;
+          border: 1px solid #10a37f;
+          background: #10a37f;
           color: #ffffff;
           font-weight: 600;
+        }
+        .hydra-send:hover {
+          background: #0e8f70;
+          border-color: #0e8f70;
         }
         .hydra-send:disabled,
         .hydra-btn:disabled,
@@ -1155,7 +1164,7 @@ export default function HydraChatApp() {
           justify-content: space-between;
           gap: 12px;
           flex-wrap: wrap;
-          color: #6b7280;
+          color: #7c7c85;
           font-size: 12px;
           line-height: 1.6;
         }
@@ -1165,7 +1174,7 @@ export default function HydraChatApp() {
         @media (max-width: 960px) {
           .hydra-app { padding: 12px; }
           .hydra-shell { min-height: calc(100vh - 24px); grid-template-columns: 1fr; }
-          .hydra-sidebar { border-right: none; border-bottom: 1px solid #e5e7eb; }
+          .hydra-sidebar { border-right: none; border-bottom: 1px solid #2a2a2a; }
           .hydra-thread-list {
             display: grid;
             grid-auto-flow: column;
