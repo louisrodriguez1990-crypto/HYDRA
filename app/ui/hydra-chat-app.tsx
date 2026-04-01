@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 
 type Topology = "fast" | "think" | "discover";
@@ -97,8 +98,8 @@ const STATUS_COLOR: Record<Exclude<MessageStatus, "final">, string> = {
   fallback: "#fb7185",
 };
 const STATUS_COPY: Record<Exclude<MessageStatus, "final">, string> = {
-  draft: "First-pass answer ready.",
-  refining: "Hydra is refining this answer in the background.",
+  draft: "Hydra is checking the right angles before it commits to a final answer.",
+  refining: "Hydra is still working through the answer and tightening it up.",
   fallback: "Showing the best available answer before the request budget expired.",
 };
 const STARTER_PROMPTS = [
@@ -122,7 +123,7 @@ function getThreadPreview(thread: ChatThread) {
   const lastMessage = thread.messages[thread.messages.length - 1];
   if (!lastMessage) return "No messages yet";
 
-  const collapsed = lastMessage.text.replace(/\s+/g, " ").trim();
+  const collapsed = buildPreviewText(lastMessage.text);
   const prefix = lastMessage.role === "user" ? "You: " : "Hydra: ";
   const preview = collapsed || "No preview available";
   const combined = `${prefix}${preview}`;
@@ -240,6 +241,252 @@ function summarizeTraceAnswer(answer: string) {
   const collapsed = answer.replace(/\s+/g, " ").trim();
   if (!collapsed) return "No subproblem answer was captured.";
   return collapsed.length > 220 ? `${collapsed.slice(0, 220).trimEnd()}...` : collapsed;
+}
+
+function stripPresentationArtifacts(text: string) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return true;
+      if (/^<{3,}.*$/.test(trimmed) || /^>{3,}.*$/.test(trimmed)) return false;
+      if (/^(begin|end)\s+(analysis|thinking|response|output)\b/i.test(trimmed)) return false;
+      return true;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function buildPreviewText(text: string) {
+  return stripPresentationArtifacts(text)
+    .replace(/```[\s\S]*?```/g, "[code]")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*•]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildDraftNarration(topology: Topology | undefined, rigor: Rigor) {
+  if (topology === "discover") {
+    return rigor === "rigorous"
+      ? "Before I answer, I want to test a few competing frames, see where they agree or clash, and make sure the final idea holds up from more than one angle."
+      : "Before I answer, I want to check the real constraints and explore a couple of non-obvious directions so I don’t just default to the usual playbook.";
+  }
+
+  if (topology === "think") {
+    return rigor === "rigorous"
+      ? "Before I answer, I want to break this into parts, pressure-test the tradeoffs, and make sure the recommendation still holds once the pieces interact."
+      : "Before I answer, I want to check the main constraints and tradeoffs so I can give you a tighter answer instead of a rushed one.";
+  }
+
+  return "Before I answer, I want to check the key context and make sure I’m not missing the obvious constraint.";
+}
+
+function humanizeProgressStep(label: string, topology: Topology | undefined) {
+  const exact: Record<string, string> = {
+    "Preparing a deeper reasoning pass":
+      "Before I answer, I’m checking a few angles so the final response is actually worth reading.",
+    "Breaking the problem into subproblems":
+      "I’m breaking the problem into smaller parts so I can test them separately.",
+    "Merging subproblem interactions into a final answer":
+      "I’m combining those pieces and checking how they change each other.",
+    "Revising the answer":
+      "I’m tightening the answer so it’s clearer and more defensible.",
+    "Breaking assumptions and naming hard constraints":
+      "Before I answer, I’m pinning down the real constraints and stripping away soft assumptions.",
+    "Deriving options from hard constraints":
+      "I’m deriving options from the actual constraints instead of defaulting to standard playbooks.",
+    "Revising the final first-principles answer":
+      "I’m turning that analysis into a clear final answer.",
+    "Testing the consensus frame":
+      "I’m checking what still looks true if the mainstream view is basically right.",
+    "Testing the anti-consensus frame":
+      "I’m checking what changes if the mainstream view is wrong for incentive reasons.",
+    "Testing the structural-shift frame":
+      "I’m checking what becomes valuable if this domain is about to shift.",
+    "Mining contradictions across the frames":
+      "I’m looking for where those frames agree, clash, or leave something important out.",
+    "Synthesizing the invisible insight":
+      "I’m extracting the part that only becomes visible when those frames are compared.",
+  };
+
+  if (exact[label]) return exact[label];
+
+  if (label.startsWith("Working through subproblems ")) {
+    return "I’m working through the first set of subproblems in parallel.";
+  }
+
+  if (label.startsWith("Using earlier results to solve ")) {
+    return "I’m using the early results to tackle the part that depends on them.";
+  }
+
+  if (label.startsWith("Solving subproblem ")) {
+    return "I’m working through one part of the problem in more depth.";
+  }
+
+  if (label.startsWith("Critiquing subproblem ")) {
+    return "I’m pressure-testing that part for weak assumptions or missing constraints.";
+  }
+
+  if (label.startsWith("Revising subproblem ")) {
+    return "I’m tightening that part before I merge it back into the full answer.";
+  }
+
+  if (label.startsWith("Running ")) {
+    return topology === "discover"
+      ? "I’m reviewing the current direction for weak spots, generic thinking, and missing tradeoffs."
+      : "I’m pressure-testing the draft for weak assumptions and missing tradeoffs.";
+  }
+
+  if (label.startsWith("Stress-testing the proposal with ")) {
+    return "I’m trying to break the strongest idea before I commit to it.";
+  }
+
+  return label;
+}
+
+type MarkdownRenderableBlock =
+  | { type: "heading"; level: 1 | 2 | 3 | 4; content: string }
+  | { type: "paragraph"; lines: string[] }
+  | { type: "unordered-list"; items: string[] }
+  | { type: "ordered-list"; items: string[] }
+  | { type: "blockquote"; lines: string[] };
+
+function parseMarkdownBlocks(text: string): MarkdownRenderableBlock[] {
+  const blocks: MarkdownRenderableBlock[] = [];
+  const lines = stripPresentationArtifacts(text).split("\n");
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (headingMatch) {
+      blocks.push({
+        type: "heading",
+        level: headingMatch[1].length as 1 | 2 | 3 | 4,
+        content: headingMatch[2].trim(),
+      });
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      blocks.push({ type: "blockquote", lines: quoteLines });
+      continue;
+    }
+
+    if (/^[-*•]\s+/.test(trimmed)) {
+      const items: string[] = [];
+      while (index < lines.length && /^[-*•]\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^[-*•]\s+/, ""));
+        index += 1;
+      }
+      blocks.push({ type: "unordered-list", items });
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^\d+\.\s+/, ""));
+        index += 1;
+      }
+      blocks.push({ type: "ordered-list", items });
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (index < lines.length) {
+      const next = lines[index].trim();
+      if (
+        !next ||
+        /^(#{1,4})\s+/.test(next) ||
+        /^>\s?/.test(next) ||
+        /^[-*•]\s+/.test(next) ||
+        /^\d+\.\s+/.test(next)
+      ) {
+        break;
+      }
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+
+    if (paragraphLines.length > 0) {
+      blocks.push({ type: "paragraph", lines: paragraphLines });
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return blocks;
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern =
+    /(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|(\*([^*\n]+)\*)/g;
+  let cursor = 0;
+
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      nodes.push(text.slice(cursor, index));
+    }
+
+    if (match[2] && match[3]) {
+      nodes.push(
+        <a
+          className="hydra-link"
+          href={match[3]}
+          key={`${keyPrefix}-${index}-link`}
+          rel="noreferrer"
+          target="_blank"
+        >
+          {match[2]}
+        </a>
+      );
+    } else if (match[5]) {
+      nodes.push(
+        <strong key={`${keyPrefix}-${index}-strong`}>{match[5]}</strong>
+      );
+    } else if (match[7]) {
+      nodes.push(
+        <code className="hydra-inline-code" key={`${keyPrefix}-${index}-code`}>
+          {match[7]}
+        </code>
+      );
+    } else if (match[9]) {
+      nodes.push(<em key={`${keyPrefix}-${index}-em`}>{match[9]}</em>);
+    }
+
+    cursor = index + match[0].length;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+
+  return nodes;
 }
 
 function createThread(seed?: Partial<Pick<ChatThread, "draft" | "rigor">>): ChatThread {
@@ -393,9 +640,90 @@ function MessageContent({ text }: { text: string }) {
             </pre>
           </div>
         ) : (
-          <p className="hydra-text" key={`text-${index}`}>
-            {block.content}
-          </p>
+          <div className="hydra-markdown" key={`text-${index}`}>
+            {parseMarkdownBlocks(block.content).map((markdownBlock, blockIndex) => {
+              const key = `markdown-${index}-${blockIndex}`;
+
+              if (markdownBlock.type === "heading") {
+                if (markdownBlock.level === 1) {
+                  return (
+                    <h1 className="hydra-h1" key={key}>
+                      {renderInlineMarkdown(markdownBlock.content, key)}
+                    </h1>
+                  );
+                }
+
+                if (markdownBlock.level === 2) {
+                  return (
+                    <h2 className="hydra-h2" key={key}>
+                      {renderInlineMarkdown(markdownBlock.content, key)}
+                    </h2>
+                  );
+                }
+
+                if (markdownBlock.level === 3) {
+                  return (
+                    <h3 className="hydra-h3" key={key}>
+                      {renderInlineMarkdown(markdownBlock.content, key)}
+                    </h3>
+                  );
+                }
+
+                return (
+                  <h4 className="hydra-h4" key={key}>
+                    {renderInlineMarkdown(markdownBlock.content, key)}
+                  </h4>
+                );
+              }
+
+              if (markdownBlock.type === "unordered-list") {
+                return (
+                  <ul className="hydra-list" key={key}>
+                    {markdownBlock.items.map((item, itemIndex) => (
+                      <li key={`${key}-item-${itemIndex}`}>
+                        {renderInlineMarkdown(item, `${key}-item-${itemIndex}`)}
+                      </li>
+                    ))}
+                  </ul>
+                );
+              }
+
+              if (markdownBlock.type === "ordered-list") {
+                return (
+                  <ol className="hydra-list hydra-list-ordered" key={key}>
+                    {markdownBlock.items.map((item, itemIndex) => (
+                      <li key={`${key}-item-${itemIndex}`}>
+                        {renderInlineMarkdown(item, `${key}-item-${itemIndex}`)}
+                      </li>
+                    ))}
+                  </ol>
+                );
+              }
+
+              if (markdownBlock.type === "blockquote") {
+                return (
+                  <blockquote className="hydra-quote" key={key}>
+                    {markdownBlock.lines.map((line, lineIndex) => (
+                      <p className="hydra-text" key={`${key}-line-${lineIndex}`}>
+                        {renderInlineMarkdown(line, `${key}-line-${lineIndex}`)}
+                      </p>
+                    ))}
+                  </blockquote>
+                );
+              }
+
+              return (
+                <p className="hydra-text" key={key}>
+                  {markdownBlock.lines.map((line, lineIndex) => (
+                    <span key={`${key}-line-${lineIndex}`}>
+                      {lineIndex > 0 ? <br /> : null}
+                      {renderInlineMarkdown(line, `${key}-line-${lineIndex}`)}
+                    </span>
+                  ))}
+                </p>
+              );
+            })}
+          </div>
         )
       )}
     </div>
@@ -523,6 +851,7 @@ export default function HydraChatApp() {
   }) => {
     const { threadId, assistantMessageId, responseToId, topology, rigor, draft, messages } = args;
     const refiningAt = new Date().toISOString();
+    const initialProgressStep = humanizeProgressStep("Preparing a deeper reasoning pass", topology);
 
     setThreads((current) =>
       current.map((thread) =>
@@ -535,7 +864,7 @@ export default function HydraChatApp() {
                   ? {
                       ...message,
                       status: "refining",
-                      progressSteps: ["Preparing a deeper reasoning pass"],
+                      progressSteps: [initialProgressStep],
                     }
                   : message
               ),
@@ -608,6 +937,7 @@ export default function HydraChatApp() {
 
       const appendProgressStep = (label: string) => {
         const progressAt = new Date().toISOString();
+        const friendlyLabel = humanizeProgressStep(label, topology);
 
         setThreads((current) =>
           current.map((thread) => {
@@ -622,14 +952,14 @@ export default function HydraChatApp() {
                 if (message.id !== assistantMessageId) return message;
 
                 const currentSteps = message.progressSteps ?? [];
-                if (currentSteps[currentSteps.length - 1] === label) {
+                if (currentSteps[currentSteps.length - 1] === friendlyLabel) {
                   return message;
                 }
 
                 return {
                   ...message,
                   status: "refining",
-                  progressSteps: [...currentSteps, label].slice(-8),
+                  progressSteps: [...currentSteps, friendlyLabel].slice(-8),
                 };
               }),
             };
@@ -833,16 +1163,25 @@ export default function HydraChatApp() {
           ? "draft"
           : apiStatus === "fallback"
             ? "fallback"
-            : "final"
+          : "final"
         : "fallback";
+      const rawAssistantText =
+        typeof data.content === "string" && data.content.trim()
+          ? data.content
+          : data.error ?? "Something went wrong. Please try again.";
+      const visibleAssistantText =
+        res.ok &&
+        assistantStatus === "draft" &&
+        data.metadata?.needsFollowup === true &&
+        topology &&
+        topology !== "fast"
+          ? buildDraftNarration(topology, nextRigor)
+          : rawAssistantText;
       const assistantMessageId = createId();
       const assistantMessage: ChatMessage = {
         id: assistantMessageId,
         role: "assistant",
-        text:
-          typeof data.content === "string" && data.content.trim()
-            ? data.content
-            : data.error ?? "Something went wrong. Please try again.",
+        text: visibleAssistantText,
         createdAt: finishedAt,
         topology,
         rigor: nextRigor,
@@ -878,7 +1217,7 @@ export default function HydraChatApp() {
           responseToId: userMessage.id,
           topology,
           rigor: nextRigor,
-          draft: assistantMessage.text,
+          draft: rawAssistantText,
           messages: outgoingMessages,
         });
       }
@@ -1252,6 +1591,35 @@ export default function HydraChatApp() {
           flex-direction: column;
           gap: 12px;
         }
+        .hydra-markdown {
+          display: grid;
+          gap: 12px;
+        }
+        .hydra-h1,
+        .hydra-h2,
+        .hydra-h3,
+        .hydra-h4 {
+          margin: 0;
+          color: #f5f5f5;
+          line-height: 1.3;
+          letter-spacing: -0.02em;
+        }
+        .hydra-h1 {
+          font-size: 26px;
+          font-weight: 700;
+        }
+        .hydra-h2 {
+          font-size: 22px;
+          font-weight: 700;
+        }
+        .hydra-h3 {
+          font-size: 18px;
+          font-weight: 650;
+        }
+        .hydra-h4 {
+          font-size: 16px;
+          font-weight: 650;
+        }
         .hydra-text {
           margin: 0;
           white-space: pre-wrap;
@@ -1259,6 +1627,44 @@ export default function HydraChatApp() {
           color: #ececec;
           font-size: 15px;
           line-height: 1.75;
+        }
+        .hydra-list {
+          margin: 0;
+          padding-left: 22px;
+          display: grid;
+          gap: 8px;
+          color: #ececec;
+          font-size: 15px;
+          line-height: 1.75;
+        }
+        .hydra-list-ordered {
+          padding-left: 24px;
+        }
+        .hydra-quote {
+          margin: 0;
+          padding: 12px 14px;
+          border-left: 3px solid #3a5750;
+          border-radius: 0 14px 14px 0;
+          background: #1f2624;
+        }
+        .hydra-inline-code {
+          display: inline-block;
+          padding: 1px 6px;
+          border-radius: 7px;
+          background: #2b2b2b;
+          border: 1px solid #3a3a3a;
+          color: #f2f2f2;
+          font-size: 0.92em;
+          line-height: 1.5;
+          vertical-align: baseline;
+        }
+        .hydra-link {
+          color: #7dd3fc;
+          text-decoration: none;
+        }
+        .hydra-link:hover {
+          color: #bae6fd;
+          text-decoration: underline;
         }
         .hydra-note {
           margin: 12px 0 0;
@@ -1811,7 +2217,7 @@ export default function HydraChatApp() {
                         </div>
                       </div>
                       <p className="hydra-text">
-                        Building a first-pass reply before any follow-up refinement step.
+                        Before I answer, I’m sketching a first pass and deciding whether this needs a deeper reasoning run.
                       </p>
                     </div>
                   </article>
