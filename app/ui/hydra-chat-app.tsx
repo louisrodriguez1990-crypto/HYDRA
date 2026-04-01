@@ -11,6 +11,7 @@ import {
 
 type Topology = "fast" | "think" | "discover";
 type Rigor = "balanced" | "rigorous";
+type ChatMode = "hydra" | "three_phase";
 type Role = "user" | "assistant";
 type MessageStatus = "draft" | "refining" | "final" | "fallback";
 type TraceNodeStatus = "complete" | "partial";
@@ -96,13 +97,61 @@ interface MessageCollisionTrace {
   fallbackReason?: string;
 }
 
-type MessageTrace = MessageCompoundTrace | MessageCollisionTrace;
+interface MessageThreePhaseScopingDocument {
+  realProblem: string;
+  frames: string[];
+  lazyMisses: string[];
+  criticalConstraints: string[];
+  dataNeededNext: string[];
+}
+
+interface MessageThreePhaseWorkerBrief {
+  answerShape: string;
+  mustInclude: string[];
+  mustAvoid: string[];
+  tone: string;
+  uncertaintyHandling: string;
+  instructions: string[];
+}
+
+interface MessageThreePhaseDirectorTrace {
+  scopingDocument: MessageThreePhaseScopingDocument;
+  retrievalQueries: string[];
+  retrievedContextSummary: string;
+  limitations: string[];
+}
+
+interface MessageThreePhaseArchitectTrace {
+  analysis: string;
+  workerBrief: MessageThreePhaseWorkerBrief;
+  degradedAnswer?: string;
+}
+
+interface MessageThreePhaseWorkerTrace {
+  finalAnswer: string;
+  source: "worker" | "architect" | "fallback";
+  degraded: boolean;
+  note?: string;
+}
+
+interface MessageThreePhaseTrace {
+  kind: "three_phase";
+  director: MessageThreePhaseDirectorTrace;
+  architect?: MessageThreePhaseArchitectTrace;
+  worker?: MessageThreePhaseWorkerTrace;
+}
+
+type MessageTrace =
+  | MessageCompoundTrace
+  | MessageCollisionTrace
+  | MessageThreePhaseTrace;
 
 interface ChatMessage {
   id: string;
   role: Role;
   text: string;
   createdAt: string;
+  mode?: ChatMode;
   topology?: Topology;
   rigor?: Rigor;
   latency?: number;
@@ -120,6 +169,7 @@ interface ChatThread {
   updatedAt: string;
   draft: string;
   rigor: Rigor;
+  mode: ChatMode;
   messages: ChatMessage[];
 }
 
@@ -130,10 +180,19 @@ interface MessageBlock {
 }
 
 const STORAGE_KEY = "hydra.chat.threads.v1";
+const MODE_LABEL: Record<ChatMode, string> = {
+  hydra: "Hydra",
+  three_phase: "Director > Architect > Worker",
+};
 const TOPOLOGY_COLOR: Record<Topology, string> = {
   fast: "#a3a3a3",
   think: "#8ab4ff",
   discover: "#f6bd60",
+};
+const MODE_COPY: Record<ChatMode, string> = {
+  hydra: "Hydra classifies each prompt and can refine deeper answers automatically.",
+  three_phase:
+    "Director scopes, Architect reasons, and Worker translates using the strongest reasoning model.",
 };
 const RIGOR_COPY: Record<Rigor, string> = {
   balanced: "Balanced keeps Hydra fast and flexible.",
@@ -192,9 +251,50 @@ function isCollisionCandidateStatus(value: unknown): value is MessageCollisionCa
   return value === "survived" || value === "killed" || value === "fallback";
 }
 
+function isChatMode(value: unknown): value is ChatMode {
+  return value === "hydra" || value === "three_phase";
+}
+
 function normalizeTraceStringArray(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function parseThreePhaseScopingDocument(value: unknown): MessageThreePhaseScopingDocument | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+
+  const item = value as Record<string, unknown>;
+  if (typeof item.realProblem !== "string") return undefined;
+
+  return {
+    realProblem: item.realProblem,
+    frames: normalizeTraceStringArray(item.frames),
+    lazyMisses: normalizeTraceStringArray(item.lazyMisses),
+    criticalConstraints: normalizeTraceStringArray(item.criticalConstraints),
+    dataNeededNext: normalizeTraceStringArray(item.dataNeededNext),
+  };
+}
+
+function parseThreePhaseWorkerBrief(value: unknown): MessageThreePhaseWorkerBrief | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+
+  const item = value as Record<string, unknown>;
+  if (
+    typeof item.answerShape !== "string" ||
+    typeof item.tone !== "string" ||
+    typeof item.uncertaintyHandling !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    answerShape: item.answerShape,
+    mustInclude: normalizeTraceStringArray(item.mustInclude),
+    mustAvoid: normalizeTraceStringArray(item.mustAvoid),
+    tone: item.tone,
+    uncertaintyHandling: item.uncertaintyHandling,
+    instructions: normalizeTraceStringArray(item.instructions),
+  };
 }
 
 function parseMessageTrace(value: unknown): MessageTrace | undefined {
@@ -233,6 +333,84 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
     return {
       kind: "compound",
       nodes,
+    };
+  }
+
+  if (record.kind === "three_phase") {
+    const director =
+      typeof record.director === "object" && record.director !== null
+        ? (() => {
+            const item = record.director as Record<string, unknown>;
+            const scopingDocument = parseThreePhaseScopingDocument(item.scopingDocument);
+            if (
+              !scopingDocument ||
+              typeof item.retrievedContextSummary !== "string" ||
+              !Array.isArray(item.retrievalQueries) ||
+              item.retrievalQueries.some((query) => typeof query !== "string") ||
+              !Array.isArray(item.limitations) ||
+              item.limitations.some((entry) => typeof entry !== "string")
+            ) {
+              return undefined;
+            }
+
+            return {
+              scopingDocument,
+              retrievalQueries: item.retrievalQueries as string[],
+              retrievedContextSummary: item.retrievedContextSummary,
+              limitations: item.limitations as string[],
+            } satisfies MessageThreePhaseDirectorTrace;
+          })()
+        : undefined;
+
+    if (!director) return undefined;
+
+    const architect =
+      typeof record.architect === "object" && record.architect !== null
+        ? (() => {
+            const item = record.architect as Record<string, unknown>;
+            const workerBrief = parseThreePhaseWorkerBrief(item.workerBrief);
+            if (!workerBrief || typeof item.analysis !== "string") {
+              return undefined;
+            }
+
+            return {
+              analysis: item.analysis,
+              workerBrief,
+              ...(typeof item.degradedAnswer === "string"
+                ? { degradedAnswer: item.degradedAnswer }
+                : {}),
+            } satisfies MessageThreePhaseArchitectTrace;
+          })()
+        : undefined;
+
+    const worker =
+      typeof record.worker === "object" && record.worker !== null
+        ? (() => {
+            const item = record.worker as Record<string, unknown>;
+            if (
+              typeof item.finalAnswer !== "string" ||
+              (item.source !== "worker" &&
+                item.source !== "architect" &&
+                item.source !== "fallback") ||
+              typeof item.degraded !== "boolean"
+            ) {
+              return undefined;
+            }
+
+            return {
+              finalAnswer: item.finalAnswer,
+              source: item.source,
+              degraded: item.degraded,
+              ...(typeof item.note === "string" ? { note: item.note } : {}),
+            } satisfies MessageThreePhaseWorkerTrace;
+          })()
+        : undefined;
+
+    return {
+      kind: "three_phase",
+      director,
+      ...(architect ? { architect } : {}),
+      ...(worker ? { worker } : {}),
     };
   }
 
@@ -430,6 +608,36 @@ function summarizeTraceAnswer(answer: string) {
   return collapsed.length > 220 ? `${collapsed.slice(0, 220).trimEnd()}...` : collapsed;
 }
 
+function getTraceToggleLabel(trace: MessageTrace, expanded: boolean) {
+  if (trace.kind === "collision") {
+    return expanded ? "Hide collision trace" : "Collision trace";
+  }
+
+  if (trace.kind === "three_phase") {
+    return expanded ? "Hide 3-phase trace" : "3-phase trace";
+  }
+
+  return expanded ? "Hide reasoning trace" : "Reasoning trace";
+}
+
+function getStatusCopy(message: ChatMessage) {
+  if (!message.status || message.status === "final") return "";
+
+  if (message.mode === "three_phase") {
+    if (message.status === "draft") {
+      return "Director is gathering the right context before Architect and Worker take over.";
+    }
+
+    if (message.status === "refining") {
+      return "Director, Architect, and Worker are moving through the deeper pass.";
+    }
+
+    return "Showing the best available answer before the full 3-phase pass finished cleanly.";
+  }
+
+  return STATUS_COPY[message.status];
+}
+
 function stripPresentationArtifacts(text: string) {
   return text
     .replace(/\r\n/g, "\n")
@@ -460,7 +668,15 @@ function buildPreviewText(text: string) {
     .trim();
 }
 
-function buildDraftNarration(topology: Topology | undefined, rigor: Rigor) {
+function buildDraftNarration(
+  mode: ChatMode | undefined,
+  topology: Topology | undefined,
+  rigor: Rigor
+) {
+  if (mode === "three_phase") {
+    return "Director is gathering context first, then Architect will reason through it, and Worker will turn that into the final answer.";
+  }
+
   if (topology === "discover") {
     return rigor === "rigorous"
       ? "Before I answer, I want to test a few competing frames, see where they agree or clash, and make sure the final idea holds up from more than one angle."
@@ -476,10 +692,24 @@ function buildDraftNarration(topology: Topology | undefined, rigor: Rigor) {
   return "Before I answer, I want to check the key context and make sure I’m not missing the obvious constraint.";
 }
 
-function humanizeProgressStep(label: string, topology: Topology | undefined) {
+function humanizeProgressStep(
+  label: string,
+  mode: ChatMode | undefined,
+  topology: Topology | undefined
+) {
   const exact: Record<string, string> = {
     "Preparing a deeper reasoning pass":
       "Before I answer, I’m checking a few angles so the final response is actually worth reading.",
+    "Director is gathering context":
+      "Director is gathering the relevant context from the thread and any needed sources.",
+    "Director is shaping the brief":
+      "Director is turning that context into a sharper brief for the deeper pass.",
+    "Architect is reasoning through the problem":
+      "Architect is pressure-testing the problem inside that brief.",
+    "Architect is preparing the worker brief":
+      "Architect is turning that reasoning into a precise handoff for the final answer.",
+    "Worker is composing the final answer":
+      "Worker is turning that handoff into a clean final answer.",
     "Breaking the problem into subproblems":
       "I’m breaking the problem into smaller parts so I can test them separately.",
     "Merging subproblem interactions into a final answer":
@@ -527,7 +757,7 @@ function humanizeProgressStep(label: string, topology: Topology | undefined) {
   }
 
   if (label.startsWith("Running ")) {
-    return topology === "discover"
+    return mode === "hydra" && topology === "discover"
       ? "I’m reviewing the current direction for weak spots, generic thinking, and missing tradeoffs."
       : "I’m pressure-testing the draft for weak assumptions and missing tradeoffs.";
   }
@@ -676,7 +906,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
-function createThread(seed?: Partial<Pick<ChatThread, "draft" | "rigor">>): ChatThread {
+function createThread(seed?: Partial<Pick<ChatThread, "draft" | "rigor" | "mode">>): ChatThread {
   const now = new Date().toISOString();
   return {
     id: createId(),
@@ -685,6 +915,7 @@ function createThread(seed?: Partial<Pick<ChatThread, "draft" | "rigor">>): Chat
     updatedAt: now,
     draft: seed?.draft ?? "",
     rigor: seed?.rigor ?? "balanced",
+    mode: seed?.mode ?? "hydra",
     messages: [],
   };
 }
@@ -706,6 +937,7 @@ function loadThreads() {
         typeof thread.updatedAt === "string" ? thread.updatedAt : new Date().toISOString(),
       draft: typeof thread.draft === "string" ? thread.draft : "",
       rigor: thread.rigor === "rigorous" ? "rigorous" : "balanced",
+      mode: isChatMode(thread.mode) ? thread.mode : "hydra",
       messages: Array.isArray(thread.messages)
         ? thread.messages.map((message: Record<string, unknown>) => ({
             id: typeof message.id === "string" ? message.id : createId(),
@@ -715,6 +947,7 @@ function loadThreads() {
               typeof message.createdAt === "string"
                 ? message.createdAt
                 : new Date().toISOString(),
+            mode: isChatMode(message.mode) ? message.mode : undefined,
             topology:
               message.topology === "fast" ||
               message.topology === "think" ||
@@ -980,8 +1213,22 @@ export default function HydraChatApp() {
     );
   };
 
+  const setMode = (mode: ChatMode) => {
+    if (!activeThread) return;
+    const now = new Date().toISOString();
+    setThreads((current) =>
+      current.map((thread) =>
+        thread.id === activeThread.id ? { ...thread, mode, updatedAt: now } : thread
+      )
+    );
+  };
+
   const createNewThread = (draft = "") => {
-    const nextThread = createThread({ draft });
+    const nextThread = createThread({
+      draft,
+      rigor: activeThread?.rigor ?? "balanced",
+      mode: activeThread?.mode ?? "hydra",
+    });
     startTransition(() => {
       setThreads((current) => [nextThread, ...current]);
       setActiveThreadId(nextThread.id);
@@ -1031,14 +1278,21 @@ export default function HydraChatApp() {
     threadId: string;
     assistantMessageId: string;
     responseToId: string;
-    topology: Topology;
+    mode: ChatMode;
+    topology?: Topology;
     rigor: Rigor;
     draft: string;
     messages: ChatMessage[];
   }) => {
-    const { threadId, assistantMessageId, responseToId, topology, rigor, draft, messages } = args;
+    const { threadId, assistantMessageId, responseToId, mode, topology, rigor, draft, messages } = args;
     const refiningAt = new Date().toISOString();
-    const initialProgressStep = humanizeProgressStep("Preparing a deeper reasoning pass", topology);
+    const initialProgressStep = humanizeProgressStep(
+      mode === "three_phase"
+        ? "Director is gathering context"
+        : "Preparing a deeper reasoning pass",
+      mode,
+      topology
+    );
 
     setThreads((current) =>
       current.map((thread) =>
@@ -1066,6 +1320,7 @@ export default function HydraChatApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: serializeMessages(messages),
+          mode,
           draft,
           topology,
           rigor,
@@ -1088,6 +1343,7 @@ export default function HydraChatApp() {
               typeof data.content === "string" && data.content.trim() ? data.content : draft;
             const nextStatus: MessageStatus =
               res.ok && data.metadata?.status !== "fallback" ? "final" : "fallback";
+            const nextMode = isChatMode(data.metadata?.mode) ? data.metadata.mode : undefined;
 
             return {
               ...thread,
@@ -1097,6 +1353,7 @@ export default function HydraChatApp() {
                   ? {
                       ...message,
                       text: nextText,
+                      mode: nextMode ?? message.mode,
                       topology,
                       rigor,
                       latency:
@@ -1124,7 +1381,7 @@ export default function HydraChatApp() {
 
       const appendProgressStep = (label: string) => {
         const progressAt = new Date().toISOString();
-        const friendlyLabel = humanizeProgressStep(label, topology);
+        const friendlyLabel = humanizeProgressStep(label, mode, topology);
 
         setThreads((current) =>
           current.map((thread) => {
@@ -1176,6 +1433,7 @@ export default function HydraChatApp() {
                   : draft;
             const nextStatus: MessageStatus =
               !errored && metadata?.status !== "fallback" ? "final" : "fallback";
+            const nextMode = isChatMode(metadata?.mode) ? metadata.mode : undefined;
 
             return {
               ...thread,
@@ -1185,6 +1443,7 @@ export default function HydraChatApp() {
                   ? {
                       ...message,
                       text: nextText,
+                      mode: nextMode ?? message.mode,
                       topology,
                       rigor,
                       latency:
@@ -1307,10 +1566,17 @@ export default function HydraChatApp() {
     if (!text) return;
 
     const now = new Date().toISOString();
-    const userMessage: ChatMessage = { id: createId(), role: "user", text, createdAt: now };
+    const userMessage: ChatMessage = {
+      id: createId(),
+      role: "user",
+      text,
+      createdAt: now,
+      mode: activeThread.mode,
+    };
     const outgoingMessages = [...activeThread.messages, userMessage];
     const threadId = activeThread.id;
     const rigor = activeThread.rigor;
+    const mode = activeThread.mode;
 
     setThreads((current) =>
       current.map((thread) =>
@@ -1336,11 +1602,13 @@ export default function HydraChatApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: serializeMessages(outgoingMessages),
+          mode,
           rigor,
         }),
       });
       const data = await res.json();
       const finishedAt = new Date().toISOString();
+      const nextMode = isChatMode(data.metadata?.mode) ? data.metadata.mode : mode;
       const topology = data.metadata?.topology as Topology | undefined;
       const nextRigor = (data.metadata?.rigor as Rigor | undefined) ?? rigor;
       const apiStatus = data.metadata?.status;
@@ -1356,13 +1624,14 @@ export default function HydraChatApp() {
         typeof data.content === "string" && data.content.trim()
           ? data.content
           : data.error ?? "Something went wrong. Please try again.";
-      const visibleAssistantText =
+      const shouldRunFollowup =
         res.ok &&
         assistantStatus === "draft" &&
         data.metadata?.needsFollowup === true &&
-        topology &&
-        topology !== "fast"
-          ? buildDraftNarration(topology, nextRigor)
+        (nextMode === "three_phase" || (topology != null && topology !== "fast"));
+      const visibleAssistantText =
+        shouldRunFollowup
+          ? buildDraftNarration(nextMode, topology, nextRigor)
           : rawAssistantText;
       const assistantMessageId = createId();
       const assistantMessage: ChatMessage = {
@@ -1370,6 +1639,7 @@ export default function HydraChatApp() {
         role: "assistant",
         text: visibleAssistantText,
         createdAt: finishedAt,
+        mode: nextMode,
         topology,
         rigor: nextRigor,
         latency: data.metadata?.latencyMs as number | undefined,
@@ -1391,17 +1661,12 @@ export default function HydraChatApp() {
         )
       );
 
-      if (
-        res.ok &&
-        assistantStatus === "draft" &&
-        data.metadata?.needsFollowup === true &&
-        topology &&
-        topology !== "fast"
-      ) {
+      if (shouldRunFollowup) {
         void startFollowup({
           threadId,
           assistantMessageId,
           responseToId: userMessage.id,
+          mode: nextMode,
           topology,
           rigor: nextRigor,
           draft: rawAssistantText,
@@ -1423,6 +1688,7 @@ export default function HydraChatApp() {
                     role: "assistant",
                     text: "Connection error. Please check your network and try again.",
                     createdAt: failedAt,
+                    mode,
                     rigor,
                     status: "fallback",
                     error: true,
@@ -2145,6 +2411,7 @@ export default function HydraChatApp() {
                   <span className="hydra-thread-snippet">{getThreadPreview(thread)}</span>
                   <div className="hydra-thread-meta">
                     <span>{thread.messages.length} messages</span>
+                    <span>{thread.mode === "three_phase" ? "3-phase" : "Hydra"}</span>
                     <span>{thread.rigor}</span>
                     <span>{formatThreadTime(thread.updatedAt)}</span>
                     {thread.id === sendingThreadId && <span>sending</span>}
@@ -2171,13 +2438,14 @@ export default function HydraChatApp() {
                 <h1 className="hydra-title">{activeThread?.title ?? "Hydra"}</h1>
                 <p className="hydra-subtitle">
                   {activeThread
-                    ? `${activeThread.messages.length} messages in this thread. ${RIGOR_COPY[activeThread.rigor]}`
+                    ? `${activeThread.messages.length} messages in this thread. ${MODE_LABEL[activeThread.mode]}. ${RIGOR_COPY[activeThread.rigor]}`
                     : "Loading your workspace..."}
                 </p>
               </div>
               {activeThread && (
                 <div className="hydra-pills">
                   <span className="hydra-pill">updated {formatThreadTime(activeThread.updatedAt)}</span>
+                  <span className="hydra-pill">{MODE_LABEL[activeThread.mode]}</span>
                   <span className="hydra-pill">{activeThread.rigor}</span>
                 </div>
               )}
@@ -2220,6 +2488,7 @@ export default function HydraChatApp() {
                         <div className="hydra-meta-left">
                           <span>{message.role === "user" ? "You" : "Hydra"}</span>
                           <span>{formatMessageTime(message.createdAt)}</span>
+                          {message.mode && <span className="hydra-badge">{MODE_LABEL[message.mode]}</span>}
                           {message.topology && (
                             <span className="hydra-badge" style={{ color: TOPOLOGY_COLOR[message.topology], borderColor: `${TOPOLOGY_COLOR[message.topology]}55` }}>
                               {message.topology}
@@ -2245,14 +2514,18 @@ export default function HydraChatApp() {
                       <MessageContent text={message.text} />
                       {message.role === "assistant" && message.status && message.status !== "final" && (
                         <p className="hydra-note" style={{ color: STATUS_COLOR[message.status] }}>
-                          {STATUS_COPY[message.status]}
+                          {getStatusCopy(message)}
                         </p>
                       )}
                       {message.role === "assistant" &&
                         message.status === "refining" &&
                         (message.progressSteps?.length ?? 0) > 0 && (
                           <div className="hydra-progress" aria-live="polite">
-                            <p className="hydra-progress-title">Hydra is thinking</p>
+                            <p className="hydra-progress-title">
+                              {message.mode === "three_phase"
+                                ? "3-phase is working"
+                                : "Hydra is thinking"}
+                            </p>
                             <ul className="hydra-progress-list">
                               {message.progressSteps?.map((step, index, steps) => (
                                 <li className="hydra-progress-step" key={`${message.id}-step-${index}`}>
@@ -2270,6 +2543,7 @@ export default function HydraChatApp() {
                         message.trace &&
                         ((message.trace.kind === "compound" &&
                           message.trace.nodes.length > 0) ||
+                          message.trace.kind === "three_phase" ||
                           (message.trace.kind === "collision" &&
                             message.trace.frames.length > 0)) && (
                           <div className="hydra-trace">
@@ -2278,35 +2552,244 @@ export default function HydraChatApp() {
                               type="button"
                               onClick={() => toggleTrace(message.id)}
                             >
-                              {expandedTraceMessageId === message.id
-                                ? message.trace.kind === "collision"
-                                  ? "Hide collision trace"
-                                  : "Hide reasoning trace"
-                                : message.trace.kind === "collision"
-                                  ? "Collision trace"
-                                  : "Reasoning trace"}
+                              {getTraceToggleLabel(
+                                message.trace,
+                                expandedTraceMessageId === message.id
+                              )}
                             </button>
                             {expandedTraceMessageId === message.id && (
                               <div className="hydra-trace-panel">
-                                {message.trace.kind === "compound" ? (
-                                  message.trace.nodes.map((node) => (
-                                    <div className="hydra-trace-node" key={`${message.id}-${node.id}`}>
-                                      <div className="hydra-trace-head">
-                                        <span className="hydra-trace-id">Node {node.id}</span>
-                                        <span className="hydra-badge">{node.status}</span>
-                                        {node.dependsOn.length > 0 && (
-                                          <span className="hydra-badge">
-                                            depends on {node.dependsOn.join(", ")}
-                                          </span>
-                                        )}
+                                {(() => {
+                                  if (message.trace.kind === "compound") {
+                                    return message.trace.nodes.map((node) => (
+                                      <div className="hydra-trace-node" key={`${message.id}-${node.id}`}>
+                                        <div className="hydra-trace-head">
+                                          <span className="hydra-trace-id">Node {node.id}</span>
+                                          <span className="hydra-badge">{node.status}</span>
+                                          {node.dependsOn.length > 0 && (
+                                            <span className="hydra-badge">
+                                              depends on {node.dependsOn.join(", ")}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <p className="hydra-trace-question">{node.question}</p>
+                                        <p className="hydra-trace-answer">
+                                          {summarizeTraceAnswer(node.answer)}
+                                        </p>
                                       </div>
-                                      <p className="hydra-trace-question">{node.question}</p>
-                                      <p className="hydra-trace-answer">
-                                        {summarizeTraceAnswer(node.answer)}
-                                      </p>
-                                    </div>
-                                  ))
-                                ) : (
+                                    ));
+                                  }
+
+                                  if (message.trace.kind === "three_phase") {
+                                    return (
+                                      <>
+                                        <div className="hydra-trace-section">
+                                          <p className="hydra-trace-section-title">Director</p>
+                                          <div className="hydra-trace-node">
+                                            <div className="hydra-trace-head">
+                                              <span className="hydra-trace-id">Scoping brief</span>
+                                              <span className="hydra-badge">director</span>
+                                            </div>
+                                            <p className="hydra-trace-question">
+                                              {message.trace.director.scopingDocument.realProblem}
+                                            </p>
+                                            {message.trace.director.scopingDocument.frames.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {message.trace.director.scopingDocument.frames.map(
+                                                  (frame, index) => (
+                                                    <li key={`${message.id}-director-frame-${index}`}>
+                                                      {summarizeTraceAnswer(frame)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {message.trace.director.scopingDocument.lazyMisses.length >
+                                              0 && (
+                                              <ul className="hydra-trace-list">
+                                                {message.trace.director.scopingDocument.lazyMisses.map(
+                                                  (item, index) => (
+                                                    <li key={`${message.id}-director-miss-${index}`}>
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {message.trace.director.scopingDocument.criticalConstraints
+                                              .length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {message.trace.director.scopingDocument.criticalConstraints.map(
+                                                  (item, index) => (
+                                                    <li
+                                                      key={`${message.id}-director-constraint-${index}`}
+                                                    >
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {message.trace.director.scopingDocument.dataNeededNext.length >
+                                              0 && (
+                                              <ul className="hydra-trace-list">
+                                                {message.trace.director.scopingDocument.dataNeededNext.map(
+                                                  (item, index) => (
+                                                    <li key={`${message.id}-director-data-${index}`}>
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            <p className="hydra-trace-answer">
+                                              {summarizeTraceAnswer(
+                                                message.trace.director.retrievedContextSummary
+                                              )}
+                                            </p>
+                                            {message.trace.director.retrievalQueries.length > 0 && (
+                                              <div className="hydra-trace-head">
+                                                {message.trace.director.retrievalQueries.map(
+                                                  (query, index) => (
+                                                    <span
+                                                      className="hydra-badge"
+                                                      key={`${message.id}-director-query-${index}`}
+                                                    >
+                                                      {query}
+                                                    </span>
+                                                  )
+                                                )}
+                                              </div>
+                                            )}
+                                            {message.trace.director.limitations.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {message.trace.director.limitations.map(
+                                                  (item, index) => (
+                                                    <li
+                                                      key={`${message.id}-director-limitation-${index}`}
+                                                    >
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                          </div>
+                                        </div>
+
+                                        {message.trace.architect && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Architect</p>
+                                            <div className="hydra-trace-node">
+                                              <div className="hydra-trace-head">
+                                                <span className="hydra-trace-id">
+                                                  Analysis
+                                                </span>
+                                                <span className="hydra-badge">architect</span>
+                                              </div>
+                                              <p className="hydra-trace-answer">
+                                                {summarizeTraceAnswer(message.trace.architect.analysis)}
+                                              </p>
+                                              {message.trace.architect.degradedAnswer && (
+                                                <p className="hydra-trace-answer">
+                                                  {summarizeTraceAnswer(
+                                                    message.trace.architect.degradedAnswer
+                                                  )}
+                                                </p>
+                                              )}
+                                              <div className="hydra-trace-head">
+                                                <span className="hydra-badge">
+                                                  {message.trace.architect.workerBrief.answerShape}
+                                                </span>
+                                                <span className="hydra-badge">
+                                                  {message.trace.architect.workerBrief.tone}
+                                                </span>
+                                              </div>
+                                              <p className="hydra-trace-answer">
+                                                {summarizeTraceAnswer(
+                                                  message.trace.architect.workerBrief
+                                                    .uncertaintyHandling
+                                                )}
+                                              </p>
+                                              {message.trace.architect.workerBrief.mustInclude.length >
+                                                0 && (
+                                                <ul className="hydra-trace-list">
+                                                  {message.trace.architect.workerBrief.mustInclude.map(
+                                                    (item, index) => (
+                                                      <li
+                                                        key={`${message.id}-architect-include-${index}`}
+                                                      >
+                                                        {summarizeTraceAnswer(item)}
+                                                      </li>
+                                                    )
+                                                  )}
+                                                </ul>
+                                              )}
+                                              {message.trace.architect.workerBrief.mustAvoid.length >
+                                                0 && (
+                                                <ul className="hydra-trace-list">
+                                                  {message.trace.architect.workerBrief.mustAvoid.map(
+                                                    (item, index) => (
+                                                      <li
+                                                        key={`${message.id}-architect-avoid-${index}`}
+                                                      >
+                                                        {summarizeTraceAnswer(item)}
+                                                      </li>
+                                                    )
+                                                  )}
+                                                </ul>
+                                              )}
+                                              {message.trace.architect.workerBrief.instructions.length >
+                                                0 && (
+                                                <ul className="hydra-trace-list">
+                                                  {message.trace.architect.workerBrief.instructions.map(
+                                                    (item, index) => (
+                                                      <li
+                                                        key={`${message.id}-architect-instruction-${index}`}
+                                                      >
+                                                        {summarizeTraceAnswer(item)}
+                                                      </li>
+                                                    )
+                                                  )}
+                                                </ul>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {message.trace.worker && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Worker</p>
+                                            <div className="hydra-trace-node">
+                                              <div className="hydra-trace-head">
+                                                <span className="hydra-trace-id">
+                                                  Final answer snapshot
+                                                </span>
+                                                <span className="hydra-badge">
+                                                  {message.trace.worker.source}
+                                                </span>
+                                                {message.trace.worker.degraded && (
+                                                  <span className="hydra-badge">degraded</span>
+                                                )}
+                                              </div>
+                                              <p className="hydra-trace-answer">
+                                                {summarizeTraceAnswer(
+                                                  message.trace.worker.finalAnswer
+                                                )}
+                                              </p>
+                                              {message.trace.worker.note && (
+                                                <p className="hydra-trace-answer">
+                                                  {summarizeTraceAnswer(message.trace.worker.note)}
+                                                </p>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </>
+                                    );
+                                  }
+
+                                  return (
                                   <>
                                     {message.trace.obviousAnswer && (
                                       <div className="hydra-trace-section">
@@ -2547,7 +3030,8 @@ export default function HydraChatApp() {
                                       </div>
                                     )}
                                   </>
-                                )}
+                                  );
+                                })()}
                               </div>
                             )}
                           </div>
@@ -2563,11 +3047,14 @@ export default function HydraChatApp() {
                         <div className="hydra-meta-left">
                           <span>Hydra</span>
                           <span>drafting</span>
+                          <span className="hydra-badge">{MODE_LABEL[activeThread.mode]}</span>
                           <span className="hydra-badge">{activeThread.rigor}</span>
                         </div>
                       </div>
                       <p className="hydra-text">
-                        Before I answer, I’m sketching a first pass and deciding whether this needs a deeper reasoning run.
+                        {activeThread.mode === "three_phase"
+                          ? "Director is scoping the problem, Architect is reasoning through it, and Worker is turning that into a clean answer."
+                          : "Before I answer, I am sketching a first pass and deciding whether this needs a deeper reasoning run."}
                       </p>
                     </div>
                   </article>
@@ -2579,6 +3066,21 @@ export default function HydraChatApp() {
 
           <footer className="hydra-compose">
             <div className="hydra-row">
+              <div className="hydra-toggle" role="group" aria-label="Thread mode">
+                {([
+                  { value: "hydra", label: "Hydra" },
+                  { value: "three_phase", label: "3-phase" },
+                ] as const).map((option) => (
+                  <button
+                    className={activeThread?.mode === option.value ? "is-active" : ""}
+                    key={option.value}
+                    type="button"
+                    onClick={() => setMode(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
               <div className="hydra-toggle" role="group" aria-label="Thread rigor">
                 {(["balanced", "rigorous"] as const).map((option) => (
                   <button className={activeThread?.rigor === option ? "is-active" : ""} key={option} type="button" onClick={() => setRigor(option)}>
@@ -2587,6 +3089,7 @@ export default function HydraChatApp() {
                 ))}
               </div>
               <div className="hydra-pills">
+                <span className="hydra-pill">{MODE_COPY[activeThread?.mode ?? "hydra"]}</span>
                 <span className="hydra-pill">{RIGOR_COPY[activeThread?.rigor ?? "balanced"]}</span>
               </div>
             </div>

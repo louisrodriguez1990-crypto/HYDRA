@@ -2,7 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { normalizeRigor } from "@/lib/hydra/controller";
 import { refineThink } from "@/lib/hydra/engine-think";
 import { refineDiscover } from "@/lib/hydra/engine-discover";
-import { isChatMessage, isTopology, type ProgressUpdate } from "@/lib/hydra/types";
+import {
+  refineThreePhase,
+  THREE_PHASE_MODEL_ID,
+} from "@/lib/hydra/engine-three-phase";
+import {
+  isChatMessage,
+  isChatMode,
+  isTopology,
+  type ProgressUpdate,
+} from "@/lib/hydra/types";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -20,6 +29,7 @@ export async function POST(req: NextRequest) {
       ? body.messages.filter(isChatMessage)
       : [];
     const draft = typeof body.draft === "string" ? body.draft : "";
+    const mode = isChatMode(body.mode) ? body.mode : "hydra";
     const topology = isTopology(body.topology) ? body.topology : null;
 
     if (messages.length === 0 || !draft.trim()) {
@@ -29,7 +39,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (topology !== "think" && topology !== "discover") {
+    if (mode === "hydra" && topology !== "think" && topology !== "discover") {
       return NextResponse.json(
         { error: "Follow-up refinement only supports think and discover responses." },
         { status: 400 }
@@ -39,7 +49,7 @@ export async function POST(req: NextRequest) {
     const rigor = normalizeRigor(body.rigor);
     const start = Date.now();
 
-    console.log(`[Hydra] followup ${topology} | rigor: ${rigor}`);
+    console.log(`[Hydra] followup ${mode === "three_phase" ? "three_phase" : topology} | rigor: ${rigor}`);
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -56,18 +66,31 @@ export async function POST(req: NextRequest) {
         };
 
         try {
-          sendStage("Preparing a deeper reasoning pass");
+          sendStage(
+            mode === "three_phase"
+              ? "Director is gathering context"
+              : "Preparing a deeper reasoning pass"
+          );
 
           const result =
-            topology === "discover"
-              ? await refineDiscover({ messages, draft, rigor, onProgress })
-              : await refineThink({ messages, draft, rigor, onProgress });
+            mode === "three_phase"
+              ? await refineThreePhase({ messages, draft, rigor, onProgress })
+              : topology === "discover"
+                ? await refineDiscover({ messages, draft, rigor, onProgress })
+                : await refineThink({ messages, draft, rigor, onProgress });
 
           controller.enqueue(
             encodeEvent("final", {
               content: result.content,
               metadata: {
-                topology,
+                mode,
+                ...(topology ? { topology } : {}),
+                ...(mode === "three_phase"
+                  ? {
+                      pipeline: "Director > Architect > Worker",
+                      modelId: THREE_PHASE_MODEL_ID,
+                    }
+                  : {}),
                 rigor,
                 latencyMs: Date.now() - start,
                 status: result.status,

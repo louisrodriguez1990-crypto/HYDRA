@@ -1,4 +1,5 @@
 export type Topology = "fast" | "think" | "discover";
+export type ChatMode = "hydra" | "three_phase";
 export type Rigor = "balanced" | "rigorous";
 export type ResponseStatus = "draft" | "final" | "fallback";
 export type TraceNodeStatus = "complete" | "partial";
@@ -100,7 +101,53 @@ export interface CollisionTrace {
   fallbackReason?: string;
 }
 
-export type ReasoningTrace = CompoundTrace | CollisionTrace;
+export interface ThreePhaseScopingDocument {
+  realProblem: string;
+  frames: string[];
+  lazyMisses: string[];
+  criticalConstraints: string[];
+  dataNeededNext: string[];
+}
+
+export interface ThreePhaseWorkerBrief {
+  answerShape: string;
+  mustInclude: string[];
+  mustAvoid: string[];
+  tone: string;
+  uncertaintyHandling: string;
+  instructions: string[];
+}
+
+export interface ThreePhaseDirectorTrace {
+  scopingDocument: ThreePhaseScopingDocument;
+  retrievalQueries: string[];
+  retrievedContextSummary: string;
+  limitations: string[];
+}
+
+export interface ThreePhaseArchitectTrace {
+  analysis: string;
+  workerBrief: ThreePhaseWorkerBrief;
+  degradedAnswer?: string;
+}
+
+export type ThreePhaseWorkerSource = "worker" | "architect" | "fallback";
+
+export interface ThreePhaseWorkerTrace {
+  finalAnswer: string;
+  source: ThreePhaseWorkerSource;
+  degraded: boolean;
+  note?: string;
+}
+
+export interface ThreePhaseTrace {
+  kind: "three_phase";
+  director: ThreePhaseDirectorTrace;
+  architect?: ThreePhaseArchitectTrace;
+  worker?: ThreePhaseWorkerTrace;
+}
+
+export type ReasoningTrace = CompoundTrace | CollisionTrace | ThreePhaseTrace;
 
 export interface ProgressUpdate {
   label: string;
@@ -128,4 +175,8 @@ export function isChatMessage(value: unknown): value is ChatMessage {
 
 export function isTopology(value: unknown): value is Topology {
   return value === "fast" || value === "think" || value === "discover";
+}
+
+export function isChatMode(value: unknown): value is ChatMode {
+  return value === "hydra" || value === "three_phase";
 }
