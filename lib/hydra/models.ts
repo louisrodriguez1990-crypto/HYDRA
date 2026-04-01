@@ -7,6 +7,6 @@ export const MODELS = {
   wild:               { id: "arcee-ai/trinity-large-preview" },
   coder:              { id: "qwen/qwen3-coder" },
   threePhaseDirector: { id: "x-ai/grok-4.20-beta" },
-  threePhaseArchitect:{ id: "x-ai/grok-4.20-multi-agent-beta" },
+  threePhaseArchitect:{ id: "deepseek/deepseek-r1-distill-llama-70b" },
   threePhaseWorker:   { id: "x-ai/grok-4.1-fast" },
 } as const;
