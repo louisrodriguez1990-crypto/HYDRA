@@ -7,6 +7,10 @@ import {
   draftThreePhase,
   THREE_PHASE_MODEL_ID,
 } from "@/lib/hydra/engine-three-phase";
+import {
+  draftResearch,
+  RESEARCH_MODEL_ID,
+} from "@/lib/hydra/engine-research";
 import { isChatMessage, isChatMode } from "@/lib/hydra/types";
 
 export const maxDuration = 300;
@@ -38,6 +42,25 @@ export async function POST(req: NextRequest) {
           mode,
           pipeline: "Director > Architect > Worker",
           modelId: THREE_PHASE_MODEL_ID,
+          rigor,
+          latencyMs: Date.now() - start,
+          status: result.status,
+          needsFollowup: result.needsFollowup,
+          trace: result.trace,
+        },
+      });
+    }
+
+    if (mode === "research") {
+      console.log(`[Hydra] initial research | rigor: ${rigor}`);
+      const result = await draftResearch(messages, rigor);
+
+      return NextResponse.json({
+        content: result.content,
+        metadata: {
+          mode,
+          pipeline: "Frame > Swarm > Filter > Synthesize",
+          modelId: RESEARCH_MODEL_ID,
           rigor,
           latencyMs: Date.now() - start,
           status: result.status,

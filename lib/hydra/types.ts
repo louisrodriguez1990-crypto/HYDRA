@@ -1,5 +1,5 @@
 export type Topology = "fast" | "think" | "discover";
-export type ChatMode = "hydra" | "three_phase";
+export type ChatMode = "hydra" | "three_phase" | "research";
 export type Rigor = "balanced" | "rigorous";
 export type ResponseStatus = "draft" | "final" | "fallback";
 export type TraceNodeStatus = "complete" | "partial";
@@ -147,7 +147,73 @@ export interface ThreePhaseTrace {
   worker?: ThreePhaseWorkerTrace;
 }
 
-export type ReasoningTrace = CompoundTrace | CollisionTrace | ThreePhaseTrace;
+export interface ResearchSearchAxis {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+export interface ResearchFrame {
+  objective: string;
+  successCriteria: string[];
+  disqualifiers: string[];
+  commonTraps: string[];
+  interpretations: string[];
+  governingInterpretation: string;
+  searchAxes: ResearchSearchAxis[];
+  outputShape: string;
+}
+
+export type ResearchCandidateConfidence = "low" | "medium" | "high";
+
+export interface ResearchCandidate {
+  id: string;
+  axisId: string;
+  axisLabel: string;
+  candidate: string;
+  mechanism: string;
+  whyItMayPersist: string;
+  whyCheapOrWeakModelsMayBeWrong: string;
+  residualRisk: string;
+  confidence: ResearchCandidateConfidence;
+}
+
+export interface ResearchSurvivor {
+  candidateId: string;
+  axisId: string;
+  axisLabel: string;
+  candidate: string;
+  mechanism: string;
+  persistenceSource: string;
+  residualRisk: string;
+  whySurvived: string;
+}
+
+export interface ResearchRejected {
+  candidateId: string;
+  axisId: string;
+  axisLabel: string;
+  candidate: string;
+  fatalFlaw: string;
+}
+
+export interface ResearchTrace {
+  kind: "research";
+  frame: ResearchFrame;
+  axes: ResearchSearchAxis[];
+  generatedCandidates: ResearchCandidate[];
+  survivors: ResearchSurvivor[];
+  rejected: ResearchRejected[];
+  selectedCandidateIds: string[];
+  filterSummary: string;
+  fallbackReason?: string;
+}
+
+export type ReasoningTrace =
+  | CompoundTrace
+  | CollisionTrace
+  | ThreePhaseTrace
+  | ResearchTrace;
 
 export interface ProgressUpdate {
   label: string;
@@ -178,5 +244,5 @@ export function isTopology(value: unknown): value is Topology {
 }
 
 export function isChatMode(value: unknown): value is ChatMode {
-  return value === "hydra" || value === "three_phase";
+  return value === "hydra" || value === "three_phase" || value === "research";
 }

@@ -7,6 +7,10 @@ import {
   THREE_PHASE_MODEL_ID,
 } from "@/lib/hydra/engine-three-phase";
 import {
+  refineResearch,
+  RESEARCH_MODEL_ID,
+} from "@/lib/hydra/engine-research";
+import {
   isChatMessage,
   isChatMode,
   isTopology,
@@ -69,12 +73,16 @@ export async function POST(req: NextRequest) {
           sendStage(
             mode === "three_phase"
               ? "Director is gathering context"
+              : mode === "research"
+                ? "Frame is defining the rules"
               : "Preparing a deeper reasoning pass"
           );
 
           const result =
             mode === "three_phase"
               ? await refineThreePhase({ messages, draft, rigor, onProgress })
+              : mode === "research"
+                ? await refineResearch({ messages, draft, rigor, onProgress })
               : topology === "discover"
                 ? await refineDiscover({ messages, draft, rigor, onProgress })
                 : await refineThink({ messages, draft, rigor, onProgress });
@@ -90,6 +98,11 @@ export async function POST(req: NextRequest) {
                       pipeline: "Director > Architect > Worker",
                       modelId: THREE_PHASE_MODEL_ID,
                     }
+                  : mode === "research"
+                    ? {
+                        pipeline: "Frame > Swarm > Filter > Synthesize",
+                        modelId: RESEARCH_MODEL_ID,
+                      }
                   : {}),
                 rigor,
                 latencyMs: Date.now() - start,

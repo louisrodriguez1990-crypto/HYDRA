@@ -9,4 +9,8 @@ export const MODELS = {
   threePhaseDirector: { id: "x-ai/grok-4.20-beta" },
   threePhaseArchitect:{ id: "deepseek/deepseek-r1-distill-llama-70b" },
   threePhaseWorker:   { id: "x-ai/grok-4.1-fast" },
+  researchFrame:      { id: "x-ai/grok-4.20-beta" },
+  researchSwarm:      { id: "x-ai/grok-4.1-fast" },
+  researchFilter:     { id: "deepseek/deepseek-r1-distill-llama-70b" },
+  researchSynthesize: { id: "x-ai/grok-4.20-beta" },
 } as const;

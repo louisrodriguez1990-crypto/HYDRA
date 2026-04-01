@@ -11,7 +11,7 @@ import {
 
 type Topology = "fast" | "think" | "discover";
 type Rigor = "balanced" | "rigorous";
-type ChatMode = "hydra" | "three_phase";
+type ChatMode = "hydra" | "three_phase" | "research";
 type Role = "user" | "assistant";
 type MessageStatus = "draft" | "refining" | "final" | "fallback";
 type TraceNodeStatus = "complete" | "partial";
@@ -141,10 +141,73 @@ interface MessageThreePhaseTrace {
   worker?: MessageThreePhaseWorkerTrace;
 }
 
+interface MessageResearchAxis {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+interface MessageResearchFrame {
+  objective: string;
+  successCriteria: string[];
+  disqualifiers: string[];
+  commonTraps: string[];
+  interpretations: string[];
+  governingInterpretation: string;
+  searchAxes: MessageResearchAxis[];
+  outputShape: string;
+}
+
+type MessageResearchCandidateConfidence = "low" | "medium" | "high";
+
+interface MessageResearchCandidate {
+  id: string;
+  axisId: string;
+  axisLabel: string;
+  candidate: string;
+  mechanism: string;
+  whyItMayPersist: string;
+  whyCheapOrWeakModelsMayBeWrong: string;
+  residualRisk: string;
+  confidence: MessageResearchCandidateConfidence;
+}
+
+interface MessageResearchSurvivor {
+  candidateId: string;
+  axisId: string;
+  axisLabel: string;
+  candidate: string;
+  mechanism: string;
+  persistenceSource: string;
+  residualRisk: string;
+  whySurvived: string;
+}
+
+interface MessageResearchRejected {
+  candidateId: string;
+  axisId: string;
+  axisLabel: string;
+  candidate: string;
+  fatalFlaw: string;
+}
+
+interface MessageResearchTrace {
+  kind: "research";
+  frame: MessageResearchFrame;
+  axes: MessageResearchAxis[];
+  generatedCandidates: MessageResearchCandidate[];
+  survivors: MessageResearchSurvivor[];
+  rejected: MessageResearchRejected[];
+  selectedCandidateIds: string[];
+  filterSummary: string;
+  fallbackReason?: string;
+}
+
 type MessageTrace =
   | MessageCompoundTrace
   | MessageCollisionTrace
-  | MessageThreePhaseTrace;
+  | MessageThreePhaseTrace
+  | MessageResearchTrace;
 
 interface ChatMessage {
   id: string;
@@ -183,6 +246,7 @@ const STORAGE_KEY = "hydra.chat.threads.v1";
 const MODE_LABEL: Record<ChatMode, string> = {
   hydra: "Hydra",
   three_phase: "Director > Architect > Worker",
+  research: "Frame > Swarm > Filter > Synthesize",
 };
 const TOPOLOGY_COLOR: Record<Topology, string> = {
   fast: "#a3a3a3",
@@ -193,6 +257,8 @@ const MODE_COPY: Record<ChatMode, string> = {
   hydra: "Hydra classifies each prompt and can refine deeper answers automatically.",
   three_phase:
     "Director scopes, Architect reasons, and Worker translates using the strongest reasoning model.",
+  research:
+    "Research frames the problem, fans out across search axes, cuts weak ideas aggressively, and synthesizes the winners late.",
 };
 const RIGOR_COPY: Record<Rigor, string> = {
   balanced: "Balanced keeps Hydra fast and flexible.",
@@ -252,7 +318,7 @@ function isCollisionCandidateStatus(value: unknown): value is MessageCollisionCa
 }
 
 function isChatMode(value: unknown): value is ChatMode {
-  return value === "hydra" || value === "three_phase";
+  return value === "hydra" || value === "three_phase" || value === "research";
 }
 
 function normalizeTraceStringArray(value: unknown) {
@@ -294,6 +360,52 @@ function parseThreePhaseWorkerBrief(value: unknown): MessageThreePhaseWorkerBrie
     tone: item.tone,
     uncertaintyHandling: item.uncertaintyHandling,
     instructions: normalizeTraceStringArray(item.instructions),
+  };
+}
+
+function parseResearchFrame(value: unknown): MessageResearchFrame | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+
+  const item = value as Record<string, unknown>;
+  if (
+    typeof item.objective !== "string" ||
+    typeof item.governingInterpretation !== "string" ||
+    typeof item.outputShape !== "string"
+  ) {
+    return undefined;
+  }
+
+  const searchAxes = Array.isArray(item.searchAxes)
+    ? item.searchAxes
+        .map((entry) => {
+          if (typeof entry !== "object" || entry === null) return null;
+          const record = entry as Record<string, unknown>;
+          if (
+            typeof record.id !== "string" ||
+            typeof record.label !== "string" ||
+            typeof record.prompt !== "string"
+          ) {
+            return null;
+          }
+
+          return {
+            id: record.id,
+            label: record.label,
+            prompt: record.prompt,
+          } satisfies MessageResearchAxis;
+        })
+        .filter((entry): entry is MessageResearchAxis => entry !== null)
+    : [];
+
+  return {
+    objective: item.objective,
+    successCriteria: normalizeTraceStringArray(item.successCriteria),
+    disqualifiers: normalizeTraceStringArray(item.disqualifiers),
+    commonTraps: normalizeTraceStringArray(item.commonTraps),
+    interpretations: normalizeTraceStringArray(item.interpretations),
+    governingInterpretation: item.governingInterpretation,
+    searchAxes,
+    outputShape: item.outputShape,
   };
 }
 
@@ -411,6 +523,149 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
       director,
       ...(architect ? { architect } : {}),
       ...(worker ? { worker } : {}),
+    };
+  }
+
+  if (record.kind === "research") {
+    const frame = parseResearchFrame(record.frame);
+    if (!frame) return undefined;
+
+    const axes = Array.isArray(record.axes)
+      ? record.axes
+          .map((entry) => {
+            if (typeof entry !== "object" || entry === null) return null;
+            const item = entry as Record<string, unknown>;
+            if (
+              typeof item.id !== "string" ||
+              typeof item.label !== "string" ||
+              typeof item.prompt !== "string"
+            ) {
+              return null;
+            }
+
+            return {
+              id: item.id,
+              label: item.label,
+              prompt: item.prompt,
+            } satisfies MessageResearchAxis;
+          })
+          .filter((entry): entry is MessageResearchAxis => entry !== null)
+      : [];
+
+    const generatedCandidates = Array.isArray(record.generatedCandidates)
+      ? record.generatedCandidates
+          .map((entry) => {
+            if (typeof entry !== "object" || entry === null) return null;
+            const item = entry as Record<string, unknown>;
+            if (
+              typeof item.id !== "string" ||
+              typeof item.axisId !== "string" ||
+              typeof item.axisLabel !== "string" ||
+              typeof item.candidate !== "string" ||
+              typeof item.mechanism !== "string" ||
+              typeof item.whyItMayPersist !== "string" ||
+              typeof item.whyCheapOrWeakModelsMayBeWrong !== "string" ||
+              typeof item.residualRisk !== "string" ||
+              (item.confidence !== "low" &&
+                item.confidence !== "medium" &&
+                item.confidence !== "high")
+            ) {
+              return null;
+            }
+
+            return {
+              id: item.id,
+              axisId: item.axisId,
+              axisLabel: item.axisLabel,
+              candidate: item.candidate,
+              mechanism: item.mechanism,
+              whyItMayPersist: item.whyItMayPersist,
+              whyCheapOrWeakModelsMayBeWrong: item.whyCheapOrWeakModelsMayBeWrong,
+              residualRisk: item.residualRisk,
+              confidence: item.confidence,
+            } satisfies MessageResearchCandidate;
+          })
+          .filter((entry): entry is MessageResearchCandidate => entry !== null)
+      : [];
+
+    const survivors = Array.isArray(record.survivors)
+      ? record.survivors
+          .map((entry) => {
+            if (typeof entry !== "object" || entry === null) return null;
+            const item = entry as Record<string, unknown>;
+            if (
+              typeof item.candidateId !== "string" ||
+              typeof item.axisId !== "string" ||
+              typeof item.axisLabel !== "string" ||
+              typeof item.candidate !== "string" ||
+              typeof item.mechanism !== "string" ||
+              typeof item.persistenceSource !== "string" ||
+              typeof item.residualRisk !== "string" ||
+              typeof item.whySurvived !== "string"
+            ) {
+              return null;
+            }
+
+            return {
+              candidateId: item.candidateId,
+              axisId: item.axisId,
+              axisLabel: item.axisLabel,
+              candidate: item.candidate,
+              mechanism: item.mechanism,
+              persistenceSource: item.persistenceSource,
+              residualRisk: item.residualRisk,
+              whySurvived: item.whySurvived,
+            } satisfies MessageResearchSurvivor;
+          })
+          .filter((entry): entry is MessageResearchSurvivor => entry !== null)
+      : [];
+
+    const rejected = Array.isArray(record.rejected)
+      ? record.rejected
+          .map((entry) => {
+            if (typeof entry !== "object" || entry === null) return null;
+            const item = entry as Record<string, unknown>;
+            if (
+              typeof item.candidateId !== "string" ||
+              typeof item.axisId !== "string" ||
+              typeof item.axisLabel !== "string" ||
+              typeof item.candidate !== "string" ||
+              typeof item.fatalFlaw !== "string"
+            ) {
+              return null;
+            }
+
+            return {
+              candidateId: item.candidateId,
+              axisId: item.axisId,
+              axisLabel: item.axisLabel,
+              candidate: item.candidate,
+              fatalFlaw: item.fatalFlaw,
+            } satisfies MessageResearchRejected;
+          })
+          .filter((entry): entry is MessageResearchRejected => entry !== null)
+      : [];
+
+    if (
+      typeof record.filterSummary !== "string" ||
+      !Array.isArray(record.selectedCandidateIds) ||
+      record.selectedCandidateIds.some((entry) => typeof entry !== "string")
+    ) {
+      return undefined;
+    }
+
+    return {
+      kind: "research",
+      frame,
+      axes,
+      generatedCandidates,
+      survivors,
+      rejected,
+      selectedCandidateIds: record.selectedCandidateIds as string[],
+      filterSummary: record.filterSummary,
+      ...(typeof record.fallbackReason === "string"
+        ? { fallbackReason: record.fallbackReason }
+        : {}),
     };
   }
 
@@ -613,6 +868,10 @@ function getTraceToggleLabel(trace: MessageTrace, expanded: boolean) {
     return expanded ? "Hide collision trace" : "Collision trace";
   }
 
+  if (trace.kind === "research") {
+    return expanded ? "Hide research trace" : "Research trace";
+  }
+
   if (trace.kind === "three_phase") {
     return expanded ? "Hide 3-phase trace" : "3-phase trace";
   }
@@ -622,6 +881,18 @@ function getTraceToggleLabel(trace: MessageTrace, expanded: boolean) {
 
 function getStatusCopy(message: ChatMessage) {
   if (!message.status || message.status === "final") return "";
+
+  if (message.mode === "research") {
+    if (message.status === "draft") {
+      return "Frame is defining what counts before Swarm, Filter, and Synthesize run.";
+    }
+
+    if (message.status === "refining") {
+      return "Research is exploring breadth, cutting weak candidates, and packaging the winners.";
+    }
+
+    return "Showing the best available answer before the full Research pass finished cleanly.";
+  }
 
   if (message.mode === "three_phase") {
     if (message.status === "draft") {
@@ -673,6 +944,10 @@ function buildDraftNarration(
   topology: Topology | undefined,
   rigor: Rigor
 ) {
+  if (mode === "research") {
+    return "Frame is defining the rules first, then Swarm will explore multiple search axes, Filter will cut weak candidates, and Synthesize will package the winners.";
+  }
+
   if (mode === "three_phase") {
     return "Director is gathering context first, then Architect will reason through it, and Worker will turn that into the final answer.";
   }
@@ -700,6 +975,14 @@ function humanizeProgressStep(
   const exact: Record<string, string> = {
     "Preparing a deeper reasoning pass":
       "Before I answer, I’m checking a few angles so the final response is actually worth reading.",
+    "Frame is defining the rules":
+      "Frame is defining what actually counts, what gets disqualified, and where to search next.",
+    "Swarm is exploring the search axes":
+      "Swarm is exploring multiple independent search axes so we do not converge on the obvious answer too early.",
+    "Filter is cutting weak candidates":
+      "Filter is slashing weak, duplicate, or fake candidates before the final model sees them.",
+    "Synthesize is packaging the winners":
+      "Synthesize is turning the surviving shortlist into the final ranked answer.",
     "Director is gathering context":
       "Director is gathering the relevant context from the thread and any needed sources.",
     "Director is shaping the brief":
@@ -1287,7 +1570,9 @@ export default function HydraChatApp() {
     const { threadId, assistantMessageId, responseToId, mode, topology, rigor, draft, messages } = args;
     const refiningAt = new Date().toISOString();
     const initialProgressStep = humanizeProgressStep(
-      mode === "three_phase"
+      mode === "research"
+        ? "Frame is defining the rules"
+        : mode === "three_phase"
         ? "Director is gathering context"
         : "Preparing a deeper reasoning pass",
       mode,
@@ -1628,7 +1913,9 @@ export default function HydraChatApp() {
         res.ok &&
         assistantStatus === "draft" &&
         data.metadata?.needsFollowup === true &&
-        (nextMode === "three_phase" || (topology != null && topology !== "fast"));
+        (nextMode === "three_phase" ||
+          nextMode === "research" ||
+          (topology != null && topology !== "fast"));
       const visibleAssistantText =
         shouldRunFollowup
           ? buildDraftNarration(nextMode, topology, nextRigor)
@@ -2411,7 +2698,7 @@ export default function HydraChatApp() {
                   <span className="hydra-thread-snippet">{getThreadPreview(thread)}</span>
                   <div className="hydra-thread-meta">
                     <span>{thread.messages.length} messages</span>
-                    <span>{thread.mode === "three_phase" ? "3-phase" : "Hydra"}</span>
+                    <span>{thread.mode === "three_phase" ? "3-phase" : thread.mode === "research" ? "Research" : "Hydra"}</span>
                     <span>{thread.rigor}</span>
                     <span>{formatThreadTime(thread.updatedAt)}</span>
                     {thread.id === sendingThreadId && <span>sending</span>}
@@ -2524,7 +2811,9 @@ export default function HydraChatApp() {
                             <p className="hydra-progress-title">
                               {message.mode === "three_phase"
                                 ? "3-phase is working"
-                                : "Hydra is thinking"}
+                                : message.mode === "research"
+                                  ? "Research is working"
+                                  : "Hydra is thinking"}
                             </p>
                             <ul className="hydra-progress-list">
                               {message.progressSteps?.map((step, index, steps) => (
@@ -2543,6 +2832,7 @@ export default function HydraChatApp() {
                         message.trace &&
                         ((message.trace.kind === "compound" &&
                           message.trace.nodes.length > 0) ||
+                          message.trace.kind === "research" ||
                           message.trace.kind === "three_phase" ||
                           (message.trace.kind === "collision" &&
                             message.trace.frames.length > 0)) && (
@@ -2578,6 +2868,262 @@ export default function HydraChatApp() {
                                         </p>
                                       </div>
                                     ));
+                                  }
+
+                                  if (message.trace.kind === "research") {
+                                    const trace = message.trace;
+                                    return (
+                                      <>
+                                        <div className="hydra-trace-section">
+                                          <p className="hydra-trace-section-title">Frame</p>
+                                          <div className="hydra-trace-node">
+                                            <div className="hydra-trace-head">
+                                              <span className="hydra-trace-id">Objective</span>
+                                              <span className="hydra-badge">frame</span>
+                                            </div>
+                                            <p className="hydra-trace-question">
+                                              {trace.frame.objective}
+                                            </p>
+                                            {trace.frame.successCriteria.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.frame.successCriteria.map(
+                                                  (item, index) => (
+                                                    <li key={`${message.id}-research-success-${index}`}>
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {trace.frame.disqualifiers.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.frame.disqualifiers.map(
+                                                  (item, index) => (
+                                                    <li key={`${message.id}-research-disqualifier-${index}`}>
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {trace.frame.commonTraps.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.frame.commonTraps.map(
+                                                  (item, index) => (
+                                                    <li key={`${message.id}-research-trap-${index}`}>
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {trace.frame.interpretations.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.frame.interpretations.map(
+                                                  (item, index) => (
+                                                    <li key={`${message.id}-research-interpretation-${index}`}>
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            <p className="hydra-trace-answer">
+                                              Governing interpretation:{" "}
+                                              {summarizeTraceAnswer(trace.frame.governingInterpretation)}
+                                            </p>
+                                            <p className="hydra-trace-answer">
+                                              Output shape:{" "}
+                                              {summarizeTraceAnswer(trace.frame.outputShape)}
+                                            </p>
+                                          </div>
+                                        </div>
+
+                                        {trace.axes.length > 0 && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Search axes</p>
+                                            {trace.axes.map((axis) => (
+                                              <div
+                                                className="hydra-trace-node"
+                                                key={`${message.id}-research-axis-${axis.id}`}
+                                              >
+                                                <div className="hydra-trace-head">
+                                                  <span className="hydra-trace-id">{axis.label}</span>
+                                                  <span className="hydra-badge">{axis.id}</span>
+                                                </div>
+                                                <p className="hydra-trace-answer">
+                                                  {summarizeTraceAnswer(axis.prompt)}
+                                                </p>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+
+                                        {trace.generatedCandidates.length > 0 && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Generated candidates</p>
+                                            {trace.axes.map((axis) => {
+                                              const axisCandidates = trace.generatedCandidates.filter(
+                                                (candidate) => candidate.axisId === axis.id
+                                              );
+                                              if (axisCandidates.length === 0) return null;
+
+                                              return (
+                                                <div
+                                                  className="hydra-trace-node"
+                                                  key={`${message.id}-research-candidate-group-${axis.id}`}
+                                                >
+                                                  <div className="hydra-trace-head">
+                                                    <span className="hydra-trace-id">{axis.label}</span>
+                                                    <span className="hydra-badge">{axis.id}</span>
+                                                  </div>
+                                                  {axisCandidates.map((candidate) => (
+                                                    <div
+                                                      className="hydra-trace-node"
+                                                      key={`${message.id}-research-candidate-${candidate.id}`}
+                                                    >
+                                                      <div className="hydra-trace-head">
+                                                        <span className="hydra-trace-id">{candidate.id}</span>
+                                                        <span className="hydra-badge">
+                                                          {candidate.confidence}
+                                                        </span>
+                                                        {trace.selectedCandidateIds.includes(candidate.id) && (
+                                                          <span className="hydra-badge">selected</span>
+                                                        )}
+                                                      </div>
+                                                      <p className="hydra-trace-question">
+                                                        {candidate.candidate}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Mechanism: {summarizeTraceAnswer(candidate.mechanism)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Persistence:{" "}
+                                                        {summarizeTraceAnswer(candidate.whyItMayPersist)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Weak-model failure mode:{" "}
+                                                        {summarizeTraceAnswer(
+                                                          candidate.whyCheapOrWeakModelsMayBeWrong
+                                                        )}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Residual risk:{" "}
+                                                        {summarizeTraceAnswer(candidate.residualRisk)}
+                                                      </p>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+
+                                        <div className="hydra-trace-section">
+                                          <p className="hydra-trace-section-title">Filter summary</p>
+                                          <p className="hydra-trace-answer">
+                                            {summarizeTraceAnswer(trace.filterSummary)}
+                                          </p>
+                                        </div>
+
+                                        {trace.rejected.length > 0 && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Rejected</p>
+                                            {trace.rejected.map((candidate) => (
+                                              <div
+                                                className="hydra-trace-node"
+                                                key={`${message.id}-research-rejected-${candidate.candidateId}`}
+                                              >
+                                                <div className="hydra-trace-head">
+                                                  <span className="hydra-trace-id">
+                                                    {candidate.candidateId}
+                                                  </span>
+                                                  <span className="hydra-badge">
+                                                    {candidate.axisLabel}
+                                                  </span>
+                                                </div>
+                                                <p className="hydra-trace-question">
+                                                  {candidate.candidate}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Fatal flaw:{" "}
+                                                  {summarizeTraceAnswer(candidate.fatalFlaw)}
+                                                </p>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+
+                                        {trace.survivors.length > 0 && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Survivors</p>
+                                            {trace.survivors.map((candidate) => (
+                                              <div
+                                                className="hydra-trace-node"
+                                                key={`${message.id}-research-survivor-${candidate.candidateId}`}
+                                              >
+                                                <div className="hydra-trace-head">
+                                                  <span className="hydra-trace-id">
+                                                    {candidate.candidateId}
+                                                  </span>
+                                                  <span className="hydra-badge">
+                                                    {candidate.axisLabel}
+                                                  </span>
+                                                  {trace.selectedCandidateIds.includes(candidate.candidateId) && (
+                                                    <span className="hydra-badge">selected</span>
+                                                  )}
+                                                </div>
+                                                <p className="hydra-trace-question">
+                                                  {candidate.candidate}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Mechanism: {summarizeTraceAnswer(candidate.mechanism)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Persistence:{" "}
+                                                  {summarizeTraceAnswer(
+                                                    candidate.persistenceSource
+                                                  )}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Residual risk:{" "}
+                                                  {summarizeTraceAnswer(candidate.residualRisk)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Why it survived:{" "}
+                                                  {summarizeTraceAnswer(candidate.whySurvived)}
+                                                </p>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+
+                                        {trace.selectedCandidateIds.length > 0 && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Selected finalists</p>
+                                            <div className="hydra-trace-head">
+                                              {trace.selectedCandidateIds.map((candidateId) => (
+                                                <span
+                                                  className="hydra-badge"
+                                                  key={`${message.id}-research-selected-${candidateId}`}
+                                                >
+                                                  {candidateId}
+                                                </span>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {trace.fallbackReason && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Fallback reason</p>
+                                            <p className="hydra-trace-answer">
+                                              {summarizeTraceAnswer(trace.fallbackReason)}
+                                            </p>
+                                          </div>
+                                        )}
+                                      </>
+                                    );
                                   }
 
                                   if (message.trace.kind === "three_phase") {
@@ -3054,7 +3600,9 @@ export default function HydraChatApp() {
                       <p className="hydra-text">
                         {activeThread.mode === "three_phase"
                           ? "Director is scoping the problem, Architect is reasoning through it, and Worker is turning that into a clean answer."
-                          : "Before I answer, I am sketching a first pass and deciding whether this needs a deeper reasoning run."}
+                          : activeThread.mode === "research"
+                            ? "Frame is defining the rules, Swarm is searching across multiple axes, Filter is cutting weak candidates, and Synthesize is packaging the winners."
+                            : "Before I answer, I am sketching a first pass and deciding whether this needs a deeper reasoning run."}
                       </p>
                     </div>
                   </article>
@@ -3070,6 +3618,7 @@ export default function HydraChatApp() {
                 {([
                   { value: "hydra", label: "Hydra" },
                   { value: "three_phase", label: "3-phase" },
+                  { value: "research", label: "Research" },
                 ] as const).map((option) => (
                   <button
                     className={activeThread?.mode === option.value ? "is-active" : ""}
