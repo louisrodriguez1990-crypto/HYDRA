@@ -1,5 +1,7 @@
 import { call } from "./openrouter";
 import { MODELS } from "./models";
+import type { ChatMessage, Rigor } from "./types";
+import { verifyAnswer } from "./verify";
 
 const FIRST_PRINCIPLES = `You are a first-principles thinker. For the given problem:
 
@@ -7,9 +9,9 @@ const FIRST_PRINCIPLES = `You are a first-principles thinker. For the given prob
 
 2. STRIPPED ASSUMPTIONS: What does the current approach assume that isn't actually a hard constraint? List every convention, habit, and "how it's done" that COULD be different.
 
-3. REBUILD FROM SCRATCH: You're an alien engineer who has never seen how humans do this. Starting from ONLY the hard constraints, design 3 solutions. They should look weird at first. Be specific and concrete — each solution detailed enough to actually evaluate.`;
+3. REBUILD FROM SCRATCH: You're an alien engineer who has never seen how humans do this. Starting from ONLY the hard constraints, design 3 solutions. They should look weird at first. Be specific and concrete - each solution detailed enough to actually evaluate.`;
 
-const ANALOGIES = `You are a cross-domain analogy expert. For the given problem, find 4 structurally similar problems from COMPLETELY UNRELATED fields. Not surface-similar — structurally similar.
+const ANALOGIES = `You are a cross-domain analogy expert. For the given problem, find 4 structurally similar problems from COMPLETELY UNRELATED fields. Not surface-similar - structurally similar.
 
 For each analogy:
 1. Source domain (as far from the problem's field as possible)
@@ -26,14 +28,14 @@ const INVERSION = `You are a constraint inverter. For the given problem:
 3. For each inversion, describe a specific solution that becomes possible
 4. Rate each as high/medium/low viability
 
-Example: "How to reduce traffic?" → Invert "people need to commute" → "What if no one commuted?" → Remote-first cities designed around zero commute, with physical meeting hubs you visit once a week.
+Example: "How to reduce traffic?" -> Invert "people need to commute" -> "What if no one commuted?" -> Remote-first cities designed around zero commute, with physical meeting hubs you visit once a week.
 
 The point is to explore solution spaces invisible when you accept current constraints.`;
 
 const OUTSIDER_PERSONAS = [
   {
     name: "Evolutionary Biologist",
-    prompt: "You are an evolutionary biologist encountering this problem for the first time. What solutions come to mind from evolution, natural selection, adaptation, symbiosis, parasitism, convergent evolution, and ecosystem dynamics? Map biological mechanisms to concrete solutions. Be specific — name the mechanism and show exactly how it applies.",
+    prompt: "You are an evolutionary biologist encountering this problem for the first time. What solutions come to mind from evolution, natural selection, adaptation, symbiosis, parasitism, convergent evolution, and ecosystem dynamics? Map biological mechanisms to concrete solutions. Be specific - name the mechanism and show exactly how it applies.",
   },
   {
     name: "Jazz Musician",
@@ -61,78 +63,147 @@ const DISCOVER_SYNTH = `You are producing the final answer from multiple unconve
 - Outsider perspectives from people in completely unrelated professions
 
 Your job:
-1. Find the GENUINE INSIGHTS — ideas that are both novel AND actionable. Not everything will be good. Be selective.
-2. Discard creative noise — anything vague, generic, or that violates hard constraints.
+1. Find the GENUINE INSIGHTS - ideas that are both novel AND actionable. Not everything will be good. Be selective.
+2. Discard creative noise - anything vague, generic, or that violates hard constraints.
 3. Organize the best ideas clearly. Lead with the most promising ones.
 4. For each approach, explain HOW to implement it concretely, not just WHAT it is.
-5. Do NOT mention "first principles" or "analogies" or "outsider perspective" or "constraint inversion" — present everything as integrated thinking in your own voice.
+5. Do NOT mention "first principles" or "analogies" or "outsider perspective" or "constraint inversion" - present everything as integrated thinking in your own voice.
 6. Be honest: label what's ready now vs. what's speculative.
-7. Match tone to the question. Casual question → concise answer. Serious question → thorough answer.
+7. Match tone to the question. Casual question -> concise answer. Serious question -> thorough answer.
 8. Lead with the answer. No preamble.`;
 
-export async function discover(messages: { role: string; content: string }[]): Promise<string> {
-  const query = messages[messages.length - 1].content;
+function deterministicIndex(query: string, offset = 0): number {
+  return Array.from(query).reduce(
+    (accumulator, char) => accumulator + char.charCodeAt(0) * (offset + 1),
+    0
+  );
+}
 
-  // Pick 2 random outsider personas for variety across runs
-  const shuffled = [...OUTSIDER_PERSONAS].sort(() => Math.random() - 0.5);
-  const persona1 = shuffled[0];
-  const persona2 = shuffled[1];
+function pickPersonas(query: string, rigor: Rigor) {
+  if (rigor !== "rigorous") {
+    const shuffled = [...OUTSIDER_PERSONAS].sort(() => Math.random() - 0.5);
+    return [shuffled[0], shuffled[1]] as const;
+  }
+
+  const firstIndex = deterministicIndex(query) % OUTSIDER_PERSONAS.length;
+  let secondIndex = deterministicIndex(query, 1) % OUTSIDER_PERSONAS.length;
+
+  if (secondIndex === firstIndex) {
+    secondIndex = (secondIndex + 1) % OUTSIDER_PERSONAS.length;
+  }
+
+  return [OUTSIDER_PERSONAS[firstIndex], OUTSIDER_PERSONAS[secondIndex]] as const;
+}
+
+export async function discover(
+  messages: ChatMessage[],
+  rigor: Rigor = "balanced"
+): Promise<string> {
+  const query = messages[messages.length - 1].content;
+  const rigorous = rigor === "rigorous";
+  const [persona1, persona2] = pickPersonas(query, rigor);
+  const personaModels = rigorous
+    ? [MODELS.analyst.id, MODELS.broad.id]
+    : [MODELS.wild.id, MODELS.fast.id];
 
   const [fp, analogy, inversion, out1, out2] = await Promise.allSettled([
     call(
       MODELS.analyst.id,
       [{ role: "system", content: FIRST_PRINCIPLES }, { role: "user", content: query }],
-      { maxTokens: 2048, temperature: 0.6 }
+      { maxTokens: 2048, temperature: rigorous ? 0.35 : 0.6 }
     ),
     call(
       MODELS.broad.id,
       [{ role: "system", content: ANALOGIES }, { role: "user", content: query }],
-      { maxTokens: 2048, temperature: 0.8 }
+      { maxTokens: 2048, temperature: rigorous ? 0.45 : 0.8 }
     ),
     call(
       MODELS.critic.id,
       [{ role: "system", content: INVERSION }, { role: "user", content: query }],
-      { maxTokens: 2048, temperature: 0.7 }
+      { maxTokens: 2048, temperature: rigorous ? 0.35 : 0.7 }
     ),
     call(
-      MODELS.wild.id,
+      personaModels[0],
       [
         { role: "system", content: persona1.prompt },
-        { role: "user", content: `Here's the problem:\n\n${query}\n\nWhat solutions come to mind from your background? Be specific and practical.` },
+        {
+          role: "user",
+          content: `Here's the problem:\n\n${query}\n\nWhat solutions come to mind from your background? Be specific and practical.`,
+        },
       ],
-      { maxTokens: 2048, temperature: 0.85 }
+      { maxTokens: 2048, temperature: rigorous ? 0.4 : 0.85 }
     ),
     call(
-      MODELS.fast.id,
+      personaModels[1],
       [
         { role: "system", content: persona2.prompt },
-        { role: "user", content: `Here's the problem:\n\n${query}\n\nWhat solutions come to mind from your background? Be specific and practical.` },
+        {
+          role: "user",
+          content: `Here's the problem:\n\n${query}\n\nWhat solutions come to mind from your background? Be specific and practical.`,
+        },
       ],
-      { maxTokens: 2048, temperature: 0.8 }
+      { maxTokens: 2048, temperature: rigorous ? 0.35 : 0.8 }
     ),
   ]);
 
   const sections: string[] = [];
-  if (fp.status === "fulfilled" && fp.value)       sections.push(`--- First Principles Reconstruction ---\n${fp.value}`);
-  if (analogy.status === "fulfilled" && analogy.value) sections.push(`--- Cross-Domain Analogies ---\n${analogy.value}`);
-  if (inversion.status === "fulfilled" && inversion.value) sections.push(`--- Constraint Inversions ---\n${inversion.value}`);
-  if (out1.status === "fulfilled" && out1.value)   sections.push(`--- Outsider Perspective (${persona1.name}) ---\n${out1.value}`);
-  if (out2.status === "fulfilled" && out2.value)   sections.push(`--- Outsider Perspective (${persona2.name}) ---\n${out2.value}`);
+  if (fp.status === "fulfilled" && fp.value) {
+    sections.push(`--- First Principles Reconstruction ---\n${fp.value}`);
+  }
+  if (analogy.status === "fulfilled" && analogy.value) {
+    sections.push(`--- Cross-Domain Analogies ---\n${analogy.value}`);
+  }
+  if (inversion.status === "fulfilled" && inversion.value) {
+    sections.push(`--- Constraint Inversions ---\n${inversion.value}`);
+  }
+  if (out1.status === "fulfilled" && out1.value) {
+    sections.push(`--- Outsider Perspective (${persona1.name}) ---\n${out1.value}`);
+  }
+  if (out2.status === "fulfilled" && out2.value) {
+    sections.push(`--- Outsider Perspective (${persona2.name}) ---\n${out2.value}`);
+  }
+
+  let draft: string;
 
   if (sections.length === 0) {
-    return call(
+    draft = await call(
       MODELS.analyst.id,
-      [...messages.slice(0, -1), { role: "user", content: `Think about this from first principles and unconventional angles:\n\n${query}` }],
-      { maxTokens: 3000, temperature: 0.7 }
+      [
+        ...messages.slice(0, -1),
+        {
+          role: "user",
+          content: `Think about this from first principles and unconventional angles:\n\n${query}`,
+        },
+      ],
+      { maxTokens: 3000, temperature: rigorous ? 0.4 : 0.7 }
+    );
+  } else {
+    draft = await call(
+      MODELS.analyst.id,
+      [
+        {
+          role: "system",
+          content: `${DISCOVER_SYNTH}${
+            rigorous
+              ? `\n9. Make the answer systematic: include the main recommendation, the biggest implementation risk, and the best next experiment or validation step.`
+              : ""
+          }`,
+        },
+        {
+          role: "user",
+          content: `Question: ${query}\n\n${sections.join("\n\n")}\n\nSynthesize the best insights into a clear, actionable answer.`,
+        },
+      ],
+      { maxTokens: 3000, temperature: rigorous ? 0.25 : 0.4 }
     );
   }
 
-  return call(
-    MODELS.analyst.id,
-    [
-      { role: "system", content: DISCOVER_SYNTH },
-      { role: "user", content: `Question: ${query}\n\n${sections.join("\n\n")}\n\nSynthesize the best insights into a clear, actionable answer.` },
-    ],
-    { maxTokens: 3000, temperature: 0.4 }
-  );
+  const verified = await verifyAnswer({
+    query,
+    draft,
+    topology: "discover",
+    rigor,
+  });
+
+  return verified.content;
 }
