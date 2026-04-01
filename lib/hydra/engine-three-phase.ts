@@ -15,7 +15,17 @@ import type {
   ThreePhaseWorkerTrace,
 } from "./types";
 
-export const THREE_PHASE_MODEL_ID = MODELS.reasoner.id;
+const THREE_PHASE_MODELS = {
+  director: MODELS.threePhaseDirector.id,
+  architect: MODELS.threePhaseArchitect.id,
+  worker: MODELS.threePhaseWorker.id,
+} as const;
+
+export const THREE_PHASE_MODEL_ID = [
+  `director:${THREE_PHASE_MODELS.director}`,
+  `architect:${THREE_PHASE_MODELS.architect}`,
+  `worker:${THREE_PHASE_MODELS.worker}`,
+].join(" | ");
 
 const THREE_PHASE_DRAFT =
   "Director is gathering context and shaping the brief before Architect and Worker take over.";
@@ -57,7 +67,7 @@ Rules:
 - Skip external retrieval for generic prompts that can be answered from the thread alone.
 - Keep queries short and targeted.
 - Return at most 3 repo queries and 3 web queries.
-- Be concrete and concise.
+- Be concrete, concise, and token-efficient.
 - Do not answer the question.`;
 
 const DIRECTOR_CONSOLIDATE_PROMPT = `You are Director.
@@ -83,6 +93,7 @@ Rules:
 - The architectBrief should explain what matters, what to optimize for, and what not to ignore.
 - Limitations should mention missing, failed, weak, or uncertain context when relevant.
 - If retrieval failed, still produce a usable brief.
+- Keep the brief dense instead of expansive.
 - Do not answer the user's question.`;
 
 const ARCHITECT_ANALYSIS_PROMPT = `You are Architect.
@@ -98,6 +109,7 @@ Output ONLY JSON with this shape:
 Rules:
 - analysis should do the real reasoning.
 - degradedAnswer must be a safe user-facing fallback only if Worker fails later.
+- Keep analysis high-signal and avoid repetition.
 - Keep degradedAnswer shorter and cleaner than analysis.
 - Do not mention Director, Architect, Worker, or internal process.`;
 
@@ -120,6 +132,7 @@ Rules:
 - mustInclude should capture the non-negotiable ideas.
 - mustAvoid should name the failure modes in the final answer style.
 - instructions should be concrete and execution-ready.
+- Be compact and specific.
 - Do not answer the user's question yourself.`;
 
 const WORKER_PROMPT = `You are Worker.
@@ -131,6 +144,7 @@ Rules:
 - Follow the answerShape, mustInclude, mustAvoid, tone, uncertaintyHandling, and instructions exactly.
 - Use the analysis only as support; do not expose the internal scaffolding.
 - If the analysis is uncertain, follow the uncertaintyHandling guidance instead of inventing certainty.
+- Keep the final answer clean and efficient.
 - Do not mention Director, Architect, Worker, or the internal pipeline.`;
 
 interface DirectorRetrievalPlan {
@@ -328,6 +342,28 @@ function buildFallbackDirectorPlan(query: string, needsRepoContext: boolean, nee
 
 function uniqueStrings(items: string[]) {
   return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
+}
+
+function getDirectorReasoning(rigor: Rigor) {
+  return {
+    effort: rigor === "rigorous" ? "low" : "minimal",
+    exclude: true,
+  } as const;
+}
+
+function getArchitectReasoning(rigor: Rigor) {
+  return {
+    effort: rigor === "rigorous" ? "medium" : "low",
+    exclude: true,
+  } as const;
+}
+
+function getWorkerReasoning() {
+  return {
+    enabled: false,
+    effort: "none",
+    exclude: true,
+  } as const;
 }
 
 function looksCodebaseOrFileTask(messages: ChatMessage[]) {
@@ -582,15 +618,16 @@ function buildDirectorTrace(args: {
 async function runDirectorPlan(messages: ChatMessage[], rigor: Rigor) {
   const query = messages[messages.length - 1]?.content ?? "";
   const raw = await call(
-    THREE_PHASE_MODEL_ID,
+    THREE_PHASE_MODELS.director,
     [
       { role: "system", content: DIRECTOR_PLAN_PROMPT },
       { role: "user", content: buildDirectorPlanUserPrompt(messages, rigor) },
     ],
     {
-      maxTokens: rigor === "rigorous" ? 900 : 700,
-      temperature: 0.15,
-      timeoutMs: 20_000,
+      maxTokens: rigor === "rigorous" ? 750 : 600,
+      temperature: 0.1,
+      timeoutMs: 18_000,
+      reasoning: getDirectorReasoning(rigor),
     }
   );
 
@@ -620,7 +657,7 @@ async function runDirectorConsolidation(args: {
 }) {
   const { messages, plan, retrieval, rigor } = args;
   const raw = await call(
-    THREE_PHASE_MODEL_ID,
+    THREE_PHASE_MODELS.director,
     [
       { role: "system", content: DIRECTOR_CONSOLIDATE_PROMPT },
       {
@@ -634,9 +671,10 @@ async function runDirectorConsolidation(args: {
       },
     ],
     {
-      maxTokens: rigor === "rigorous" ? 1_200 : 950,
+      maxTokens: rigor === "rigorous" ? 950 : 800,
       temperature: 0.1,
-      timeoutMs: 24_000,
+      timeoutMs: 18_000,
+      reasoning: getDirectorReasoning(rigor),
     }
   );
 
@@ -679,7 +717,7 @@ async function runArchitectAnalysis(args: {
   rigor: Rigor;
 }) {
   const raw = await call(
-    THREE_PHASE_MODEL_ID,
+    THREE_PHASE_MODELS.architect,
     [
       { role: "system", content: ARCHITECT_ANALYSIS_PROMPT },
       {
@@ -692,9 +730,10 @@ async function runArchitectAnalysis(args: {
       },
     ],
     {
-      maxTokens: args.rigor === "rigorous" ? 2_400 : 1_900,
-      temperature: 0.2,
-      timeoutMs: 40_000,
+      maxTokens: args.rigor === "rigorous" ? 2_000 : 1_500,
+      temperature: 0.15,
+      timeoutMs: 32_000,
+      reasoning: getArchitectReasoning(args.rigor),
     }
   );
 
@@ -716,7 +755,7 @@ async function runArchitectWorkerBrief(args: {
   analysis: string;
 }) {
   const raw = await call(
-    THREE_PHASE_MODEL_ID,
+    THREE_PHASE_MODELS.architect,
     [
       { role: "system", content: ARCHITECT_WORKER_BRIEF_PROMPT },
       {
@@ -729,9 +768,13 @@ async function runArchitectWorkerBrief(args: {
       },
     ],
     {
-      maxTokens: 1_200,
-      temperature: 0.15,
-      timeoutMs: 24_000,
+      maxTokens: 800,
+      temperature: 0.1,
+      timeoutMs: 18_000,
+      reasoning: {
+        effort: "minimal",
+        exclude: true,
+      },
     }
   );
 
@@ -745,7 +788,7 @@ async function runWorker(args: {
   workerBrief: ThreePhaseWorkerBrief;
 }) {
   const raw = await call(
-    THREE_PHASE_MODEL_ID,
+    THREE_PHASE_MODELS.worker,
     [
       { role: "system", content: WORKER_PROMPT },
       {
@@ -758,9 +801,10 @@ async function runWorker(args: {
       },
     ],
     {
-      maxTokens: 1_400,
-      temperature: 0.1,
-      timeoutMs: 22_000,
+      maxTokens: 1_000,
+      temperature: 0.05,
+      timeoutMs: 16_000,
+      reasoning: getWorkerReasoning(),
     }
   );
 

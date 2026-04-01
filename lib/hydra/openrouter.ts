@@ -2,6 +2,27 @@ import OpenAI from "openai";
 
 let _client: OpenAI | null = null;
 
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+
+export interface CallOptions {
+  maxTokens?: number;
+  temperature?: number;
+  timeoutMs?: number;
+  maxRetries?: number;
+  signal?: AbortSignal;
+  reasoning?: {
+    effort?: ReasoningEffort;
+    exclude?: boolean;
+    enabled?: boolean;
+  };
+}
+
 function getClient(): OpenAI {
   if (!_client) {
     _client = new OpenAI({
@@ -19,27 +40,26 @@ function getClient(): OpenAI {
 export async function call(
   modelId: string,
   messages: { role: string; content: string }[],
-  opts: {
-    maxTokens?: number;
-    temperature?: number;
-    timeoutMs?: number;
-    maxRetries?: number;
-    signal?: AbortSignal;
-  } = {}
+  opts: CallOptions = {}
 ): Promise<string> {
   const client = getClient();
   try {
-    const res = await client.chat.completions.create({
+    const payload = {
       model: modelId,
       messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
       max_tokens: opts.maxTokens ?? 4096,
       temperature: opts.temperature ?? 0.7,
-      stream: false,
-    }, {
+      stream: false as const,
+      ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
+    } as OpenAI.Chat.ChatCompletionCreateParams & {
+      reasoning?: CallOptions["reasoning"];
+    };
+
+    const res = (await client.chat.completions.create(payload, {
       maxRetries: opts.maxRetries ?? 0,
       timeout: opts.timeoutMs,
       signal: opts.signal,
-    });
+    })) as OpenAI.Chat.ChatCompletion;
     return res.choices[0]?.message?.content ?? "";
   } catch (err) {
     console.error(`[Hydra] ${modelId} failed:`, err);
