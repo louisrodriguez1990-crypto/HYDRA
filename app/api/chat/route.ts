@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
         content: result.content,
         metadata: {
           mode,
-          pipeline: "Frame > Swarm > Filter > Synthesize",
+          pipeline: "Frame > Candidate Swarm > Elimination Swarm > Consensus > Synthesize > Verify",
           modelId: RESEARCH_MODEL_ID,
           rigor,
           latencyMs: Date.now() - start,

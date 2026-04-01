@@ -153,14 +153,35 @@ export interface ResearchSearchAxis {
   prompt: string;
 }
 
+export interface ResearchReasoningSchema {
+  candidateId: string;
+  axis: string;
+  system: string;
+  inputs: string;
+  mechanism: string;
+  constraints: string;
+  incentives: string;
+  whyItPersists: string;
+  failureModes: string;
+  testOrFalsifier: string;
+  confidence: string;
+}
+
+export interface ResearchEliminationCriteria {
+  punish: string[];
+  fatalFlawCategories: ResearchFatalFlawCategory[];
+}
+
 export interface ResearchFrame {
   objective: string;
+  governingInterpretation: string;
   successCriteria: string[];
+  requiredReasoningSchema: ResearchReasoningSchema;
   disqualifiers: string[];
   commonTraps: string[];
   interpretations: string[];
-  governingInterpretation: string;
   searchAxes: ResearchSearchAxis[];
+  eliminationCriteria: ResearchEliminationCriteria;
   outputShape: string;
 }
 
@@ -171,22 +192,68 @@ export interface ResearchCandidate {
   axisId: string;
   axisLabel: string;
   candidate: string;
+  system: string;
+  inputs: string;
   mechanism: string;
-  whyItMayPersist: string;
-  whyCheapOrWeakModelsMayBeWrong: string;
-  residualRisk: string;
+  constraints: string;
+  incentives: string;
+  whyItPersists: string;
+  failureModes: string;
+  testOrFalsifier: string;
   confidence: ResearchCandidateConfidence;
 }
 
-export interface ResearchSurvivor {
+export interface ResearchEliminationKeep {
+  candidateId: string;
+  rank: 1 | 2 | 3 | 4;
+  whyKept: string;
+}
+
+export type ResearchFatalFlawCategory =
+  | "frame_violation"
+  | "weak_mechanism"
+  | "missing_constraint"
+  | "incentive_mismatch"
+  | "no_persistence"
+  | "fragile_execution"
+  | "hidden_failure_surface"
+  | "duplicate_or_weaker_variant"
+  | "unsupported_claim"
+  | "no_falsifier";
+
+export interface ResearchEliminationRejection {
+  candidateId: string;
+  fatalFlawCategory: ResearchFatalFlawCategory;
+  fatalFlawReason: string;
+}
+
+export interface ResearchEliminationJudgment {
+  judgeId: string;
+  lens: string;
+  summary: string;
+  kept: ResearchEliminationKeep[];
+  rejected: ResearchEliminationRejection[];
+}
+
+export interface ResearchFinalist {
   candidateId: string;
   axisId: string;
   axisLabel: string;
   candidate: string;
+  system: string;
+  inputs: string;
   mechanism: string;
-  persistenceSource: string;
-  residualRisk: string;
-  whySurvived: string;
+  constraints: string;
+  incentives: string;
+  whyItPersists: string;
+  failureModes: string;
+  testOrFalsifier: string;
+  totalScore: number;
+  supportCount: number;
+  averageRank: number;
+  advancedBecause: string;
+  mainObjections: string[];
+  distinctnessCluster: string;
 }
 
 export interface ResearchRejected {
@@ -194,7 +261,24 @@ export interface ResearchRejected {
   axisId: string;
   axisLabel: string;
   candidate: string;
-  fatalFlaw: string;
+  fatalFlawCategory: ResearchFatalFlawCategory;
+  fatalFlawReason: string;
+}
+
+export type ResearchVerificationStatus =
+  | "confirmed"
+  | "plausible_but_unverified"
+  | "contradicted";
+
+export interface ResearchVerificationPacketEntry {
+  candidateId: string;
+  mechanismCheck: string;
+  executionFeasibilityCheck: string;
+  constraintCheck: string;
+  persistenceCheck: string;
+  failureModeCheck: string;
+  legalCompliancePolicyFlag: string;
+  verificationStatus: ResearchVerificationStatus;
 }
 
 export interface ResearchTrace {
@@ -202,10 +286,12 @@ export interface ResearchTrace {
   frame: ResearchFrame;
   axes: ResearchSearchAxis[];
   generatedCandidates: ResearchCandidate[];
-  survivors: ResearchSurvivor[];
+  eliminationJudgments: ResearchEliminationJudgment[];
+  finalists: ResearchFinalist[];
   rejected: ResearchRejected[];
   selectedCandidateIds: string[];
-  filterSummary: string;
+  consensusSummary: string;
+  verificationPacket: ResearchVerificationPacketEntry[];
   fallbackReason?: string;
 }
 

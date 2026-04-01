@@ -147,14 +147,47 @@ interface MessageResearchAxis {
   prompt: string;
 }
 
+interface MessageResearchReasoningSchema {
+  candidateId: string;
+  axis: string;
+  system: string;
+  inputs: string;
+  mechanism: string;
+  constraints: string;
+  incentives: string;
+  whyItPersists: string;
+  failureModes: string;
+  testOrFalsifier: string;
+  confidence: string;
+}
+
+type MessageResearchFatalFlawCategory =
+  | "frame_violation"
+  | "weak_mechanism"
+  | "missing_constraint"
+  | "incentive_mismatch"
+  | "no_persistence"
+  | "fragile_execution"
+  | "hidden_failure_surface"
+  | "duplicate_or_weaker_variant"
+  | "unsupported_claim"
+  | "no_falsifier";
+
+interface MessageResearchEliminationCriteria {
+  punish: string[];
+  fatalFlawCategories: MessageResearchFatalFlawCategory[];
+}
+
 interface MessageResearchFrame {
   objective: string;
+  governingInterpretation: string;
   successCriteria: string[];
+  requiredReasoningSchema: MessageResearchReasoningSchema;
   disqualifiers: string[];
   commonTraps: string[];
   interpretations: string[];
-  governingInterpretation: string;
   searchAxes: MessageResearchAxis[];
+  eliminationCriteria: MessageResearchEliminationCriteria;
   outputShape: string;
 }
 
@@ -165,22 +198,56 @@ interface MessageResearchCandidate {
   axisId: string;
   axisLabel: string;
   candidate: string;
+  system: string;
+  inputs: string;
   mechanism: string;
-  whyItMayPersist: string;
-  whyCheapOrWeakModelsMayBeWrong: string;
-  residualRisk: string;
+  constraints: string;
+  incentives: string;
+  whyItPersists: string;
+  failureModes: string;
+  testOrFalsifier: string;
   confidence: MessageResearchCandidateConfidence;
 }
 
-interface MessageResearchSurvivor {
+interface MessageResearchEliminationKeep {
+  candidateId: string;
+  rank: 1 | 2 | 3 | 4;
+  whyKept: string;
+}
+
+interface MessageResearchEliminationRejection {
+  candidateId: string;
+  fatalFlawCategory: MessageResearchFatalFlawCategory;
+  fatalFlawReason: string;
+}
+
+interface MessageResearchEliminationJudgment {
+  judgeId: string;
+  lens: string;
+  summary: string;
+  kept: MessageResearchEliminationKeep[];
+  rejected: MessageResearchEliminationRejection[];
+}
+
+interface MessageResearchFinalist {
   candidateId: string;
   axisId: string;
   axisLabel: string;
   candidate: string;
+  system: string;
+  inputs: string;
   mechanism: string;
-  persistenceSource: string;
-  residualRisk: string;
-  whySurvived: string;
+  constraints: string;
+  incentives: string;
+  whyItPersists: string;
+  failureModes: string;
+  testOrFalsifier: string;
+  totalScore: number;
+  supportCount: number;
+  averageRank: number;
+  advancedBecause: string;
+  mainObjections: string[];
+  distinctnessCluster: string;
 }
 
 interface MessageResearchRejected {
@@ -188,7 +255,24 @@ interface MessageResearchRejected {
   axisId: string;
   axisLabel: string;
   candidate: string;
-  fatalFlaw: string;
+  fatalFlawCategory: MessageResearchFatalFlawCategory;
+  fatalFlawReason: string;
+}
+
+type MessageResearchVerificationStatus =
+  | "confirmed"
+  | "plausible_but_unverified"
+  | "contradicted";
+
+interface MessageResearchVerificationPacketEntry {
+  candidateId: string;
+  mechanismCheck: string;
+  executionFeasibilityCheck: string;
+  constraintCheck: string;
+  persistenceCheck: string;
+  failureModeCheck: string;
+  legalCompliancePolicyFlag: string;
+  verificationStatus: MessageResearchVerificationStatus;
 }
 
 interface MessageResearchTrace {
@@ -196,10 +280,12 @@ interface MessageResearchTrace {
   frame: MessageResearchFrame;
   axes: MessageResearchAxis[];
   generatedCandidates: MessageResearchCandidate[];
-  survivors: MessageResearchSurvivor[];
+  eliminationJudgments: MessageResearchEliminationJudgment[];
+  finalists: MessageResearchFinalist[];
   rejected: MessageResearchRejected[];
   selectedCandidateIds: string[];
-  filterSummary: string;
+  consensusSummary: string;
+  verificationPacket: MessageResearchVerificationPacketEntry[];
   fallbackReason?: string;
 }
 
@@ -246,7 +332,7 @@ const STORAGE_KEY = "hydra.chat.threads.v1";
 const MODE_LABEL: Record<ChatMode, string> = {
   hydra: "Hydra",
   three_phase: "Director > Architect > Worker",
-  research: "Frame > Swarm > Filter > Synthesize",
+  research: "Frame > Candidate Swarm > Elimination Swarm > Consensus > Synthesize > Verify",
 };
 const TOPOLOGY_COLOR: Record<Topology, string> = {
   fast: "#a3a3a3",
@@ -258,7 +344,7 @@ const MODE_COPY: Record<ChatMode, string> = {
   three_phase:
     "Director scopes, Architect reasons, and Worker translates using the strongest reasoning model.",
   research:
-    "Research frames the problem, fans out across search axes, cuts weak ideas aggressively, and synthesizes the winners late.",
+    "Research frames the problem, runs a 10-worker candidate tournament, cuts the field with 5 orthogonal judges, then synthesizes and verifies the winners.",
 };
 const RIGOR_COPY: Record<Rigor, string> = {
   balanced: "Balanced keeps Hydra fast and flexible.",
@@ -324,6 +410,23 @@ function isChatMode(value: unknown): value is ChatMode {
 function normalizeTraceStringArray(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function isResearchFatalFlawCategory(
+  value: unknown
+): value is MessageResearchFatalFlawCategory {
+  return (
+    value === "frame_violation" ||
+    value === "weak_mechanism" ||
+    value === "missing_constraint" ||
+    value === "incentive_mismatch" ||
+    value === "no_persistence" ||
+    value === "fragile_execution" ||
+    value === "hidden_failure_surface" ||
+    value === "duplicate_or_weaker_variant" ||
+    value === "unsupported_claim" ||
+    value === "no_falsifier"
+  );
 }
 
 function parseThreePhaseScopingDocument(value: unknown): MessageThreePhaseScopingDocument | undefined {
@@ -397,14 +500,69 @@ function parseResearchFrame(value: unknown): MessageResearchFrame | undefined {
         .filter((entry): entry is MessageResearchAxis => entry !== null)
     : [];
 
+  const requiredReasoningSchema =
+    typeof item.requiredReasoningSchema === "object" && item.requiredReasoningSchema !== null
+      ? (() => {
+          const schema = item.requiredReasoningSchema as Record<string, unknown>;
+          if (
+            typeof schema.candidateId !== "string" ||
+            typeof schema.axis !== "string" ||
+            typeof schema.system !== "string" ||
+            typeof schema.inputs !== "string" ||
+            typeof schema.mechanism !== "string" ||
+            typeof schema.constraints !== "string" ||
+            typeof schema.incentives !== "string" ||
+            typeof schema.whyItPersists !== "string" ||
+            typeof schema.failureModes !== "string" ||
+            typeof schema.testOrFalsifier !== "string" ||
+            typeof schema.confidence !== "string"
+          ) {
+            return undefined;
+          }
+
+          return {
+            candidateId: schema.candidateId,
+            axis: schema.axis,
+            system: schema.system,
+            inputs: schema.inputs,
+            mechanism: schema.mechanism,
+            constraints: schema.constraints,
+            incentives: schema.incentives,
+            whyItPersists: schema.whyItPersists,
+            failureModes: schema.failureModes,
+            testOrFalsifier: schema.testOrFalsifier,
+            confidence: schema.confidence,
+          } satisfies MessageResearchReasoningSchema;
+        })()
+      : undefined;
+
+  const eliminationCriteria =
+    typeof item.eliminationCriteria === "object" && item.eliminationCriteria !== null
+      ? (() => {
+          const criteria = item.eliminationCriteria as Record<string, unknown>;
+          const fatalFlawCategories = Array.isArray(criteria.fatalFlawCategories)
+            ? criteria.fatalFlawCategories.filter(isResearchFatalFlawCategory)
+            : [];
+
+          return {
+            punish: normalizeTraceStringArray(criteria.punish),
+            fatalFlawCategories,
+          } satisfies MessageResearchEliminationCriteria;
+        })()
+      : undefined;
+
+  if (!requiredReasoningSchema || !eliminationCriteria) return undefined;
+
   return {
     objective: item.objective,
+    governingInterpretation: item.governingInterpretation,
     successCriteria: normalizeTraceStringArray(item.successCriteria),
+    requiredReasoningSchema,
     disqualifiers: normalizeTraceStringArray(item.disqualifiers),
     commonTraps: normalizeTraceStringArray(item.commonTraps),
     interpretations: normalizeTraceStringArray(item.interpretations),
-    governingInterpretation: item.governingInterpretation,
     searchAxes,
+    eliminationCriteria,
     outputShape: item.outputShape,
   };
 }
@@ -562,10 +720,14 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
               typeof item.axisId !== "string" ||
               typeof item.axisLabel !== "string" ||
               typeof item.candidate !== "string" ||
+              typeof item.system !== "string" ||
+              typeof item.inputs !== "string" ||
               typeof item.mechanism !== "string" ||
-              typeof item.whyItMayPersist !== "string" ||
-              typeof item.whyCheapOrWeakModelsMayBeWrong !== "string" ||
-              typeof item.residualRisk !== "string" ||
+              typeof item.constraints !== "string" ||
+              typeof item.incentives !== "string" ||
+              typeof item.whyItPersists !== "string" ||
+              typeof item.failureModes !== "string" ||
+              typeof item.testOrFalsifier !== "string" ||
               (item.confidence !== "low" &&
                 item.confidence !== "medium" &&
                 item.confidence !== "high")
@@ -578,18 +740,98 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
               axisId: item.axisId,
               axisLabel: item.axisLabel,
               candidate: item.candidate,
+              system: item.system,
+              inputs: item.inputs,
               mechanism: item.mechanism,
-              whyItMayPersist: item.whyItMayPersist,
-              whyCheapOrWeakModelsMayBeWrong: item.whyCheapOrWeakModelsMayBeWrong,
-              residualRisk: item.residualRisk,
+              constraints: item.constraints,
+              incentives: item.incentives,
+              whyItPersists: item.whyItPersists,
+              failureModes: item.failureModes,
+              testOrFalsifier: item.testOrFalsifier,
               confidence: item.confidence,
             } satisfies MessageResearchCandidate;
           })
           .filter((entry): entry is MessageResearchCandidate => entry !== null)
       : [];
 
-    const survivors = Array.isArray(record.survivors)
-      ? record.survivors
+    const eliminationJudgments = Array.isArray(record.eliminationJudgments)
+      ? record.eliminationJudgments
+          .map((entry) => {
+            if (typeof entry !== "object" || entry === null) return null;
+            const item = entry as Record<string, unknown>;
+            const kept = Array.isArray(item.kept)
+              ? item.kept
+                  .map((keep) => {
+                    if (typeof keep !== "object" || keep === null) return null;
+                    const keepItem = keep as Record<string, unknown>;
+                    if (
+                      typeof keepItem.candidateId !== "string" ||
+                      typeof keepItem.whyKept !== "string" ||
+                      (keepItem.rank !== 1 &&
+                        keepItem.rank !== 2 &&
+                        keepItem.rank !== 3 &&
+                        keepItem.rank !== 4)
+                    ) {
+                      return null;
+                    }
+
+                    return {
+                      candidateId: keepItem.candidateId,
+                      rank: keepItem.rank,
+                      whyKept: keepItem.whyKept,
+                    } satisfies MessageResearchEliminationKeep;
+                  })
+                  .filter((keep): keep is MessageResearchEliminationKeep => keep !== null)
+              : [];
+
+            const rejected = Array.isArray(item.rejected)
+              ? item.rejected
+                  .map((rejection) => {
+                    if (typeof rejection !== "object" || rejection === null) return null;
+                    const rejectionItem = rejection as Record<string, unknown>;
+                    if (
+                      typeof rejectionItem.candidateId !== "string" ||
+                      !isResearchFatalFlawCategory(rejectionItem.fatalFlawCategory) ||
+                      typeof rejectionItem.fatalFlawReason !== "string"
+                    ) {
+                      return null;
+                    }
+
+                    return {
+                      candidateId: rejectionItem.candidateId,
+                      fatalFlawCategory: rejectionItem.fatalFlawCategory,
+                      fatalFlawReason: rejectionItem.fatalFlawReason,
+                    } satisfies MessageResearchEliminationRejection;
+                  })
+                  .filter(
+                    (rejection): rejection is MessageResearchEliminationRejection =>
+                      rejection !== null
+                  )
+              : [];
+
+            if (
+              typeof item.judgeId !== "string" ||
+              typeof item.lens !== "string" ||
+              typeof item.summary !== "string"
+            ) {
+              return null;
+            }
+
+            return {
+              judgeId: item.judgeId,
+              lens: item.lens,
+              summary: item.summary,
+              kept,
+              rejected,
+            } satisfies MessageResearchEliminationJudgment;
+          })
+          .filter(
+            (entry): entry is MessageResearchEliminationJudgment => entry !== null
+          )
+      : [];
+
+    const finalists = Array.isArray(record.finalists)
+      ? record.finalists
           .map((entry) => {
             if (typeof entry !== "object" || entry === null) return null;
             const item = entry as Record<string, unknown>;
@@ -598,10 +840,21 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
               typeof item.axisId !== "string" ||
               typeof item.axisLabel !== "string" ||
               typeof item.candidate !== "string" ||
+              typeof item.system !== "string" ||
+              typeof item.inputs !== "string" ||
               typeof item.mechanism !== "string" ||
-              typeof item.persistenceSource !== "string" ||
-              typeof item.residualRisk !== "string" ||
-              typeof item.whySurvived !== "string"
+              typeof item.constraints !== "string" ||
+              typeof item.incentives !== "string" ||
+              typeof item.whyItPersists !== "string" ||
+              typeof item.failureModes !== "string" ||
+              typeof item.testOrFalsifier !== "string" ||
+              typeof item.totalScore !== "number" ||
+              typeof item.supportCount !== "number" ||
+              typeof item.averageRank !== "number" ||
+              typeof item.advancedBecause !== "string" ||
+              !Array.isArray(item.mainObjections) ||
+              item.mainObjections.some((entry) => typeof entry !== "string") ||
+              typeof item.distinctnessCluster !== "string"
             ) {
               return null;
             }
@@ -611,13 +864,23 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
               axisId: item.axisId,
               axisLabel: item.axisLabel,
               candidate: item.candidate,
+              system: item.system,
+              inputs: item.inputs,
               mechanism: item.mechanism,
-              persistenceSource: item.persistenceSource,
-              residualRisk: item.residualRisk,
-              whySurvived: item.whySurvived,
-            } satisfies MessageResearchSurvivor;
+              constraints: item.constraints,
+              incentives: item.incentives,
+              whyItPersists: item.whyItPersists,
+              failureModes: item.failureModes,
+              testOrFalsifier: item.testOrFalsifier,
+              totalScore: item.totalScore,
+              supportCount: item.supportCount,
+              averageRank: item.averageRank,
+              advancedBecause: item.advancedBecause,
+              mainObjections: item.mainObjections as string[],
+              distinctnessCluster: item.distinctnessCluster,
+            } satisfies MessageResearchFinalist;
           })
-          .filter((entry): entry is MessageResearchSurvivor => entry !== null)
+          .filter((entry): entry is MessageResearchFinalist => entry !== null)
       : [];
 
     const rejected = Array.isArray(record.rejected)
@@ -630,7 +893,8 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
               typeof item.axisId !== "string" ||
               typeof item.axisLabel !== "string" ||
               typeof item.candidate !== "string" ||
-              typeof item.fatalFlaw !== "string"
+              !isResearchFatalFlawCategory(item.fatalFlawCategory) ||
+              typeof item.fatalFlawReason !== "string"
             ) {
               return null;
             }
@@ -640,14 +904,49 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
               axisId: item.axisId,
               axisLabel: item.axisLabel,
               candidate: item.candidate,
-              fatalFlaw: item.fatalFlaw,
+              fatalFlawCategory: item.fatalFlawCategory,
+              fatalFlawReason: item.fatalFlawReason,
             } satisfies MessageResearchRejected;
           })
           .filter((entry): entry is MessageResearchRejected => entry !== null)
       : [];
 
+    const verificationPacket = Array.isArray(record.verificationPacket)
+      ? record.verificationPacket
+          .map((entry) => {
+            if (typeof entry !== "object" || entry === null) return null;
+            const item = entry as Record<string, unknown>;
+            if (
+              typeof item.candidateId !== "string" ||
+              typeof item.mechanismCheck !== "string" ||
+              typeof item.executionFeasibilityCheck !== "string" ||
+              typeof item.constraintCheck !== "string" ||
+              typeof item.persistenceCheck !== "string" ||
+              typeof item.failureModeCheck !== "string" ||
+              typeof item.legalCompliancePolicyFlag !== "string" ||
+              (item.verificationStatus !== "confirmed" &&
+                item.verificationStatus !== "plausible_but_unverified" &&
+                item.verificationStatus !== "contradicted")
+            ) {
+              return null;
+            }
+
+            return {
+              candidateId: item.candidateId,
+              mechanismCheck: item.mechanismCheck,
+              executionFeasibilityCheck: item.executionFeasibilityCheck,
+              constraintCheck: item.constraintCheck,
+              persistenceCheck: item.persistenceCheck,
+              failureModeCheck: item.failureModeCheck,
+              legalCompliancePolicyFlag: item.legalCompliancePolicyFlag,
+              verificationStatus: item.verificationStatus,
+            } satisfies MessageResearchVerificationPacketEntry;
+          })
+          .filter((entry): entry is MessageResearchVerificationPacketEntry => entry !== null)
+      : [];
+
     if (
-      typeof record.filterSummary !== "string" ||
+      typeof record.consensusSummary !== "string" ||
       !Array.isArray(record.selectedCandidateIds) ||
       record.selectedCandidateIds.some((entry) => typeof entry !== "string")
     ) {
@@ -659,10 +958,12 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
       frame,
       axes,
       generatedCandidates,
-      survivors,
+      eliminationJudgments,
+      finalists,
       rejected,
       selectedCandidateIds: record.selectedCandidateIds as string[],
-      filterSummary: record.filterSummary,
+      consensusSummary: record.consensusSummary,
+      verificationPacket,
       ...(typeof record.fallbackReason === "string"
         ? { fallbackReason: record.fallbackReason }
         : {}),
@@ -884,11 +1185,11 @@ function getStatusCopy(message: ChatMessage) {
 
   if (message.mode === "research") {
     if (message.status === "draft") {
-      return "Frame is defining what counts before Swarm, Filter, and Synthesize run.";
+      return "Frame is defining what counts before the candidate swarm, elimination judges, synthesis, and verification run.";
     }
 
     if (message.status === "refining") {
-      return "Research is exploring breadth, cutting weak candidates, and packaging the winners.";
+      return "Research is running the candidate tournament, narrowing the winners, and calibrating them before the final answer lands.";
     }
 
     return "Showing the best available answer before the full Research pass finished cleanly.";
@@ -945,7 +1246,7 @@ function buildDraftNarration(
   rigor: Rigor
 ) {
   if (mode === "research") {
-    return "Frame is defining the rules first, then Swarm will explore multiple search axes, Filter will cut weak candidates, and Synthesize will package the winners.";
+    return "Frame is defining the rules first, then the candidate swarm will explore 10 search axes, the elimination swarm will cut the field, Synthesize will package the winners, and Verification will calibrate them.";
   }
 
   if (mode === "three_phase") {
@@ -977,12 +1278,14 @@ function humanizeProgressStep(
       "Before I answer, I’m checking a few angles so the final response is actually worth reading.",
     "Frame is defining the rules":
       "Frame is defining what actually counts, what gets disqualified, and where to search next.",
-    "Swarm is exploring the search axes":
-      "Swarm is exploring multiple independent search axes so we do not converge on the obvious answer too early.",
-    "Filter is cutting weak candidates":
-      "Filter is slashing weak, duplicate, or fake candidates before the final model sees them.",
+    "Candidate swarm is exploring 10 search axes":
+      "The candidate swarm is exploring ten independent axes so we do not converge on the obvious answer too early.",
+    "Elimination swarm is cutting the field":
+      "The elimination swarm is comparing the full field in parallel and aggressively cutting weak or duplicate candidates.",
     "Synthesize is packaging the winners":
-      "Synthesize is turning the surviving shortlist into the final ranked answer.",
+      "Synthesize is turning the consensus finalists into the final ranked answer.",
+    "Verification is calibrating the winners":
+      "Verification is checking whether the selected winners are actually grounded enough to survive the final answer.",
     "Director is gathering context":
       "Director is gathering the relevant context from the thread and any needed sources.",
     "Director is shaping the brief":
@@ -2895,6 +3198,10 @@ export default function HydraChatApp() {
                                                 )}
                                               </ul>
                                             )}
+                                            <p className="hydra-trace-answer">
+                                              Governing interpretation:{" "}
+                                              {summarizeTraceAnswer(trace.frame.governingInterpretation)}
+                                            </p>
                                             {trace.frame.disqualifiers.length > 0 && (
                                               <ul className="hydra-trace-list">
                                                 {trace.frame.disqualifiers.map(
@@ -2928,10 +3235,82 @@ export default function HydraChatApp() {
                                                 )}
                                               </ul>
                                             )}
-                                            <p className="hydra-trace-answer">
-                                              Governing interpretation:{" "}
-                                              {summarizeTraceAnswer(trace.frame.governingInterpretation)}
-                                            </p>
+                                            <ul className="hydra-trace-list">
+                                              <li>
+                                                Schema `candidateId`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema.candidateId
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `system`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema.system
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `mechanism`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema.mechanism
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `constraints`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema.constraints
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `incentives`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema.incentives
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `whyItPersists`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema.whyItPersists
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `failureModes`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema.failureModes
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `testOrFalsifier`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema
+                                                    .testOrFalsifier
+                                                )}
+                                              </li>
+                                            </ul>
+                                            {trace.frame.eliminationCriteria.punish.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.frame.eliminationCriteria.punish.map(
+                                                  (item, index) => (
+                                                    <li key={`${message.id}-research-punish-${index}`}>
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {trace.frame.eliminationCriteria.fatalFlawCategories.length > 0 && (
+                                              <div className="hydra-trace-head">
+                                                {trace.frame.eliminationCriteria.fatalFlawCategories.map(
+                                                  (category) => (
+                                                    <span
+                                                      className="hydra-badge"
+                                                      key={`${message.id}-research-flaw-category-${category}`}
+                                                    >
+                                                      {category}
+                                                    </span>
+                                                  )
+                                                )}
+                                              </div>
+                                            )}
                                             <p className="hydra-trace-answer">
                                               Output shape:{" "}
                                               {summarizeTraceAnswer(trace.frame.outputShape)}
@@ -2995,21 +3374,35 @@ export default function HydraChatApp() {
                                                         {candidate.candidate}
                                                       </p>
                                                       <p className="hydra-trace-answer">
+                                                        System: {summarizeTraceAnswer(candidate.system)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Inputs: {summarizeTraceAnswer(candidate.inputs)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
                                                         Mechanism: {summarizeTraceAnswer(candidate.mechanism)}
                                                       </p>
                                                       <p className="hydra-trace-answer">
-                                                        Persistence:{" "}
-                                                        {summarizeTraceAnswer(candidate.whyItMayPersist)}
+                                                        Constraints:{" "}
+                                                        {summarizeTraceAnswer(candidate.constraints)}
                                                       </p>
                                                       <p className="hydra-trace-answer">
-                                                        Weak-model failure mode:{" "}
+                                                        Incentives:{" "}
                                                         {summarizeTraceAnswer(
-                                                          candidate.whyCheapOrWeakModelsMayBeWrong
+                                                          candidate.incentives
                                                         )}
                                                       </p>
                                                       <p className="hydra-trace-answer">
-                                                        Residual risk:{" "}
-                                                        {summarizeTraceAnswer(candidate.residualRisk)}
+                                                        Why it persists:{" "}
+                                                        {summarizeTraceAnswer(candidate.whyItPersists)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Failure modes:{" "}
+                                                        {summarizeTraceAnswer(candidate.failureModes)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Test or falsifier:{" "}
+                                                        {summarizeTraceAnswer(candidate.testOrFalsifier)}
                                                       </p>
                                                     </div>
                                                   ))}
@@ -3020,11 +3413,57 @@ export default function HydraChatApp() {
                                         )}
 
                                         <div className="hydra-trace-section">
-                                          <p className="hydra-trace-section-title">Filter summary</p>
+                                          <p className="hydra-trace-section-title">Consensus summary</p>
                                           <p className="hydra-trace-answer">
-                                            {summarizeTraceAnswer(trace.filterSummary)}
+                                            {summarizeTraceAnswer(trace.consensusSummary)}
                                           </p>
                                         </div>
+
+                                        {trace.eliminationJudgments.length > 0 && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Elimination judges</p>
+                                            {trace.eliminationJudgments.map((judgment) => (
+                                              <div
+                                                className="hydra-trace-node"
+                                                key={`${message.id}-research-judge-${judgment.judgeId}`}
+                                              >
+                                                <div className="hydra-trace-head">
+                                                  <span className="hydra-trace-id">{judgment.judgeId}</span>
+                                                  <span className="hydra-badge">{judgment.lens}</span>
+                                                </div>
+                                                <p className="hydra-trace-answer">
+                                                  {summarizeTraceAnswer(judgment.summary)}
+                                                </p>
+                                                {judgment.kept.length > 0 && (
+                                                  <div className="hydra-trace-node">
+                                                    <div className="hydra-trace-head">
+                                                      {judgment.kept.map((keep) => (
+                                                        <span
+                                                          className="hydra-badge"
+                                                          key={`${message.id}-${judgment.judgeId}-keep-${keep.candidateId}`}
+                                                        >
+                                                          #{keep.rank} {keep.candidateId}
+                                                        </span>
+                                                      ))}
+                                                    </div>
+                                                  </div>
+                                                )}
+                                                {judgment.rejected.length > 0 && (
+                                                  <ul className="hydra-trace-list">
+                                                    {judgment.rejected.map((rejection) => (
+                                                      <li
+                                                        key={`${message.id}-${judgment.judgeId}-reject-${rejection.candidateId}`}
+                                                      >
+                                                        {rejection.candidateId} ({rejection.fatalFlawCategory}):{" "}
+                                                        {summarizeTraceAnswer(rejection.fatalFlawReason)}
+                                                      </li>
+                                                    ))}
+                                                  </ul>
+                                                )}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
 
                                         {trace.rejected.length > 0 && (
                                           <div className="hydra-trace-section">
@@ -3046,21 +3485,21 @@ export default function HydraChatApp() {
                                                   {candidate.candidate}
                                                 </p>
                                                 <p className="hydra-trace-answer">
-                                                  Fatal flaw:{" "}
-                                                  {summarizeTraceAnswer(candidate.fatalFlaw)}
+                                                  Fatal flaw ({candidate.fatalFlawCategory}):{" "}
+                                                  {summarizeTraceAnswer(candidate.fatalFlawReason)}
                                                 </p>
                                               </div>
                                             ))}
                                           </div>
                                         )}
 
-                                        {trace.survivors.length > 0 && (
+                                        {trace.finalists.length > 0 && (
                                           <div className="hydra-trace-section">
-                                            <p className="hydra-trace-section-title">Survivors</p>
-                                            {trace.survivors.map((candidate) => (
+                                            <p className="hydra-trace-section-title">Consensus finalists</p>
+                                            {trace.finalists.map((candidate) => (
                                               <div
                                                 className="hydra-trace-node"
-                                                key={`${message.id}-research-survivor-${candidate.candidateId}`}
+                                                key={`${message.id}-research-finalist-${candidate.candidateId}`}
                                               >
                                                 <div className="hydra-trace-head">
                                                   <span className="hydra-trace-id">
@@ -3068,6 +3507,15 @@ export default function HydraChatApp() {
                                                   </span>
                                                   <span className="hydra-badge">
                                                     {candidate.axisLabel}
+                                                  </span>
+                                                  <span className="hydra-badge">
+                                                    {candidate.totalScore} pts
+                                                  </span>
+                                                  <span className="hydra-badge">
+                                                    {candidate.supportCount} judges
+                                                  </span>
+                                                  <span className="hydra-badge">
+                                                    {candidate.distinctnessCluster}
                                                   </span>
                                                   {trace.selectedCandidateIds.includes(candidate.candidateId) && (
                                                     <span className="hydra-badge">selected</span>
@@ -3077,21 +3525,95 @@ export default function HydraChatApp() {
                                                   {candidate.candidate}
                                                 </p>
                                                 <p className="hydra-trace-answer">
+                                                  System: {summarizeTraceAnswer(candidate.system)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Inputs: {summarizeTraceAnswer(candidate.inputs)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
                                                   Mechanism: {summarizeTraceAnswer(candidate.mechanism)}
                                                 </p>
                                                 <p className="hydra-trace-answer">
-                                                  Persistence:{" "}
+                                                  Constraints:{" "}
+                                                  {summarizeTraceAnswer(candidate.constraints)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Incentives:{" "}
+                                                  {summarizeTraceAnswer(candidate.incentives)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Why it persists:{" "}
+                                                  {summarizeTraceAnswer(candidate.whyItPersists)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Failure modes:{" "}
+                                                  {summarizeTraceAnswer(candidate.failureModes)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Test or falsifier:{" "}
+                                                  {summarizeTraceAnswer(candidate.testOrFalsifier)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Why advanced:{" "}
+                                                  {summarizeTraceAnswer(candidate.advancedBecause)}
+                                                </p>
+                                                {candidate.mainObjections.length > 0 && (
+                                                  <ul className="hydra-trace-list">
+                                                    {candidate.mainObjections.map((objection, index) => (
+                                                      <li
+                                                        key={`${message.id}-research-objection-${candidate.candidateId}-${index}`}
+                                                      >
+                                                        {summarizeTraceAnswer(objection)}
+                                                      </li>
+                                                    ))}
+                                                  </ul>
+                                                )}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+
+                                        {trace.verificationPacket.length > 0 && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">Verification packet</p>
+                                            {trace.verificationPacket.map((entry) => (
+                                              <div
+                                                className="hydra-trace-node"
+                                                key={`${message.id}-research-verify-${entry.candidateId}`}
+                                              >
+                                                <div className="hydra-trace-head">
+                                                  <span className="hydra-trace-id">{entry.candidateId}</span>
+                                                  <span className="hydra-badge">
+                                                    {entry.verificationStatus}
+                                                  </span>
+                                                </div>
+                                                <p className="hydra-trace-answer">
+                                                  Mechanism check:{" "}
+                                                  {summarizeTraceAnswer(entry.mechanismCheck)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Execution feasibility:{" "}
                                                   {summarizeTraceAnswer(
-                                                    candidate.persistenceSource
+                                                    entry.executionFeasibilityCheck
                                                   )}
                                                 </p>
                                                 <p className="hydra-trace-answer">
-                                                  Residual risk:{" "}
-                                                  {summarizeTraceAnswer(candidate.residualRisk)}
+                                                  Constraint check:{" "}
+                                                  {summarizeTraceAnswer(entry.constraintCheck)}
                                                 </p>
                                                 <p className="hydra-trace-answer">
-                                                  Why it survived:{" "}
-                                                  {summarizeTraceAnswer(candidate.whySurvived)}
+                                                  Persistence check:{" "}
+                                                  {summarizeTraceAnswer(entry.persistenceCheck)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Failure-mode check:{" "}
+                                                  {summarizeTraceAnswer(entry.failureModeCheck)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Legal/compliance/policy:{" "}
+                                                  {summarizeTraceAnswer(
+                                                    entry.legalCompliancePolicyFlag
+                                                  )}
                                                 </p>
                                               </div>
                                             ))}
@@ -3601,7 +4123,7 @@ export default function HydraChatApp() {
                         {activeThread.mode === "three_phase"
                           ? "Director is scoping the problem, Architect is reasoning through it, and Worker is turning that into a clean answer."
                           : activeThread.mode === "research"
-                            ? "Frame is defining the rules, Swarm is searching across multiple axes, Filter is cutting weak candidates, and Synthesize is packaging the winners."
+                            ? "Frame is defining the rules, the candidate swarm is searching across 10 axes, the elimination swarm is cutting the field, Synthesize is packaging the winners, and Verification is calibrating them."
                             : "Before I answer, I am sketching a first pass and deciding whether this needs a deeper reasoning run."}
                       </p>
                     </div>

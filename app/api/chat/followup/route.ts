@@ -100,7 +100,8 @@ export async function POST(req: NextRequest) {
                     }
                   : mode === "research"
                     ? {
-                        pipeline: "Frame > Swarm > Filter > Synthesize",
+                        pipeline:
+                          "Frame > Candidate Swarm > Elimination Swarm > Consensus > Synthesize > Verify",
                         modelId: RESEARCH_MODEL_ID,
                       }
                   : {}),
