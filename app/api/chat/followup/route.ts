@@ -48,6 +48,7 @@ export async function POST(req: NextRequest) {
         latencyMs: Date.now() - start,
         status: result.status,
         needsFollowup: false,
+        trace: result.trace,
       },
     });
   } catch (error) {

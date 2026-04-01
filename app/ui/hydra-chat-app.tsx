@@ -12,6 +12,20 @@ type Topology = "fast" | "think" | "discover";
 type Rigor = "balanced" | "rigorous";
 type Role = "user" | "assistant";
 type MessageStatus = "draft" | "refining" | "final" | "fallback";
+type TraceNodeStatus = "complete" | "partial";
+
+interface MessageTraceNode {
+  id: string;
+  question: string;
+  dependsOn: string[];
+  answer: string;
+  status: TraceNodeStatus;
+}
+
+interface MessageTrace {
+  kind: "compound";
+  nodes: MessageTraceNode[];
+}
 
 interface ChatMessage {
   id: string;
@@ -24,6 +38,7 @@ interface ChatMessage {
   error?: boolean;
   status?: MessageStatus;
   responseToId?: string;
+  trace?: MessageTrace;
 }
 
 interface ChatThread {
@@ -97,6 +112,56 @@ function isMessageStatus(value: unknown): value is MessageStatus {
   );
 }
 
+function isTraceNodeStatus(value: unknown): value is TraceNodeStatus {
+  return value === "complete" || value === "partial";
+}
+
+function parseMessageTrace(value: unknown): MessageTrace | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "compound" || !Array.isArray(record.nodes)) return undefined;
+
+  const nodes = record.nodes
+    .map((node) => {
+      if (typeof node !== "object" || node === null) return null;
+
+      const item = node as Record<string, unknown>;
+      if (
+        typeof item.id !== "string" ||
+        typeof item.question !== "string" ||
+        !Array.isArray(item.dependsOn) ||
+        item.dependsOn.some((dependency) => typeof dependency !== "string") ||
+        typeof item.answer !== "string" ||
+        !isTraceNodeStatus(item.status)
+      ) {
+        return null;
+      }
+
+      return {
+        id: item.id,
+        question: item.question,
+        dependsOn: item.dependsOn as string[],
+        answer: item.answer,
+        status: item.status,
+      } satisfies MessageTraceNode;
+    })
+    .filter((node): node is MessageTraceNode => node !== null);
+
+  if (nodes.length !== record.nodes.length) return undefined;
+
+  return {
+    kind: "compound",
+    nodes,
+  };
+}
+
+function summarizeTraceAnswer(answer: string) {
+  const collapsed = answer.replace(/\s+/g, " ").trim();
+  if (!collapsed) return "No subproblem answer was captured.";
+  return collapsed.length > 220 ? `${collapsed.slice(0, 220).trimEnd()}...` : collapsed;
+}
+
 function createThread(seed?: Partial<Pick<ChatThread, "draft" | "rigor">>): ChatThread {
   const now = new Date().toISOString();
   return {
@@ -155,6 +220,7 @@ function loadThreads() {
                 : undefined,
             responseToId:
               typeof message.responseToId === "string" ? message.responseToId : undefined,
+            trace: parseMessageTrace(message.trace),
           }))
         : [],
     })) as ChatThread[];
@@ -259,6 +325,7 @@ export default function HydraChatApp() {
   const [hydrated, setHydrated] = useState(false);
   const [sendingThreadId, setSendingThreadId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [expandedTraceMessageId, setExpandedTraceMessageId] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -293,6 +360,10 @@ export default function HydraChatApp() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [activeThread?.messages.length, activeThreadId, sendingThreadId]);
+
+  useEffect(() => {
+    setExpandedTraceMessageId(null);
+  }, [activeThreadId]);
 
   const setDraft = (draft: string) => {
     if (!activeThread) return;
@@ -354,6 +425,10 @@ export default function HydraChatApp() {
     } catch {}
   };
 
+  const toggleTrace = (messageId: string) => {
+    setExpandedTraceMessageId((current) => (current === messageId ? null : messageId));
+  };
+
   const startFollowup = async (args: {
     threadId: string;
     assistantMessageId: string;
@@ -393,6 +468,7 @@ export default function HydraChatApp() {
       });
       const data = await res.json();
       const finishedAt = new Date().toISOString();
+      const nextTrace = parseMessageTrace(data.metadata?.trace);
 
       setThreads((current) =>
         current.map((thread) => {
@@ -421,6 +497,7 @@ export default function HydraChatApp() {
                         : message.latency,
                     status: nextStatus,
                     error: !res.ok,
+                    trace: nextTrace ?? message.trace,
                   }
                 : message
             ),
@@ -492,6 +569,7 @@ export default function HydraChatApp() {
       const topology = data.metadata?.topology as Topology | undefined;
       const nextRigor = (data.metadata?.rigor as Rigor | undefined) ?? rigor;
       const apiStatus = data.metadata?.status;
+      const nextTrace = parseMessageTrace(data.metadata?.trace);
       const assistantStatus: MessageStatus = res.ok
         ? apiStatus === "draft"
           ? "draft"
@@ -514,6 +592,7 @@ export default function HydraChatApp() {
         status: assistantStatus,
         responseToId: userMessage.id,
         error: !res.ok,
+        trace: nextTrace,
       };
 
       setThreads((current) =>
@@ -923,6 +1002,61 @@ export default function HydraChatApp() {
           font-size: 13px;
           line-height: 1.6;
         }
+        .hydra-trace {
+          margin-top: 14px;
+          padding-top: 14px;
+          border-top: 1px solid #e5e7eb;
+        }
+        .hydra-trace-toggle {
+          border: none;
+          background: transparent;
+          padding: 0;
+          color: #2563eb;
+          font-size: 13px;
+          font-weight: 600;
+          cursor: pointer;
+        }
+        .hydra-trace-toggle:hover {
+          color: #1d4ed8;
+        }
+        .hydra-trace-panel {
+          margin-top: 12px;
+          display: grid;
+          gap: 10px;
+        }
+        .hydra-trace-node {
+          padding: 12px;
+          border-radius: 14px;
+          border: 1px solid #e5e7eb;
+          background: #f8fafc;
+        }
+        .hydra-trace-head {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-bottom: 8px;
+        }
+        .hydra-trace-id {
+          font-size: 12px;
+          font-weight: 700;
+          color: #111827;
+        }
+        .hydra-trace-question {
+          margin: 0 0 8px;
+          color: #111827;
+          font-size: 14px;
+          font-weight: 600;
+          line-height: 1.5;
+        }
+        .hydra-trace-answer {
+          margin: 0;
+          color: #4b5563;
+          font-size: 13px;
+          line-height: 1.6;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
         .hydra-code {
           border-radius: 16px;
           overflow: hidden;
@@ -1185,6 +1319,42 @@ export default function HydraChatApp() {
                           {STATUS_COPY[message.status]}
                         </p>
                       )}
+                      {message.role === "assistant" &&
+                        message.trace?.kind === "compound" &&
+                        message.trace.nodes.length > 0 && (
+                          <div className="hydra-trace">
+                            <button
+                              className="hydra-trace-toggle"
+                              type="button"
+                              onClick={() => toggleTrace(message.id)}
+                            >
+                              {expandedTraceMessageId === message.id
+                                ? "Hide reasoning trace"
+                                : "Reasoning trace"}
+                            </button>
+                            {expandedTraceMessageId === message.id && (
+                              <div className="hydra-trace-panel">
+                                {message.trace.nodes.map((node) => (
+                                  <div className="hydra-trace-node" key={`${message.id}-${node.id}`}>
+                                    <div className="hydra-trace-head">
+                                      <span className="hydra-trace-id">Node {node.id}</span>
+                                      <span className="hydra-badge">{node.status}</span>
+                                      {node.dependsOn.length > 0 && (
+                                        <span className="hydra-badge">
+                                          depends on {node.dependsOn.join(", ")}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="hydra-trace-question">{node.question}</p>
+                                    <p className="hydra-trace-answer">
+                                      {summarizeTraceAnswer(node.answer)}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                     </div>
                   </article>
                 ))}
