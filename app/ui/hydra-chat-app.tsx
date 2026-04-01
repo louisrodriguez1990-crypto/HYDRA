@@ -30,10 +30,14 @@ interface MessageCompoundTrace {
 
 interface MessageCollisionTraceFrame {
   id: string;
+  kind: "baseline" | "liability_inversion" | "constraint_nullifier" | "omission";
   title: string;
   premise: string;
+  attackedAssumptionIds: string[];
+  preservedAssumptionIds: string[];
   answer: string;
   status: TraceNodeStatus;
+  note?: string;
 }
 
 interface MessageCollisionMap {
@@ -43,10 +47,53 @@ interface MessageCollisionMap {
   productiveContradictions: string[];
 }
 
+interface MessageCollisionAssumption {
+  id: string;
+  label: string;
+}
+
+interface MessageCollisionObviousAnswer {
+  domain: string;
+  obviousAnswer: string;
+  mechanism: string;
+  coreAssumptions: MessageCollisionAssumption[];
+  changedConstraint: string;
+  hiddenVariable: string;
+}
+
+type MessageCollisionCandidateStatus = "survived" | "killed" | "fallback";
+
+interface MessageCollisionCandidate {
+  id: string;
+  insight: string;
+  mechanism: string;
+  targetUser: string;
+  valueCapture: string;
+  supportingFrameIds: string[];
+  contradiction: string;
+  whyNotBaseline: string;
+  score?: number;
+  status: MessageCollisionCandidateStatus;
+  killedReason?: string;
+}
+
+interface MessageCollisionGateResult {
+  candidateId: string;
+  trainingCheck: "passed" | "failed" | "not_run";
+  webCheck: "passed" | "failed" | "unavailable" | "not_run";
+  reasons: string[];
+  revivalNote?: string;
+}
+
 interface MessageCollisionTrace {
   kind: "collision";
+  obviousAnswer?: MessageCollisionObviousAnswer;
   frames: MessageCollisionTraceFrame[];
   collisionMap: MessageCollisionMap;
+  candidates: MessageCollisionCandidate[];
+  gateResults: MessageCollisionGateResult[];
+  selectedCandidateId?: string;
+  fallbackReason?: string;
 }
 
 type MessageTrace = MessageCompoundTrace | MessageCollisionTrace;
@@ -141,6 +188,10 @@ function isTraceNodeStatus(value: unknown): value is TraceNodeStatus {
   return value === "complete" || value === "partial";
 }
 
+function isCollisionCandidateStatus(value: unknown): value is MessageCollisionCandidateStatus {
+  return value === "survived" || value === "killed" || value === "fallback";
+}
+
 function normalizeTraceStringArray(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
@@ -186,6 +237,51 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
   }
 
   if (record.kind === "collision" && Array.isArray(record.frames)) {
+    const obviousAnswer =
+      typeof record.obviousAnswer === "object" && record.obviousAnswer !== null
+        ? (() => {
+            const item = record.obviousAnswer as Record<string, unknown>;
+            const coreAssumptions = Array.isArray(item.coreAssumptions)
+              ? item.coreAssumptions
+                  .map((assumption) => {
+                    if (typeof assumption !== "object" || assumption === null) return null;
+                    const entry = assumption as Record<string, unknown>;
+                    if (typeof entry.id !== "string" || typeof entry.label !== "string") {
+                      return null;
+                    }
+
+                    return {
+                      id: entry.id,
+                      label: entry.label,
+                    } satisfies MessageCollisionAssumption;
+                  })
+                  .filter(
+                    (assumption): assumption is MessageCollisionAssumption => assumption !== null
+                  )
+              : [];
+
+            if (
+              typeof item.domain !== "string" ||
+              typeof item.obviousAnswer !== "string" ||
+              typeof item.mechanism !== "string" ||
+              typeof item.changedConstraint !== "string" ||
+              typeof item.hiddenVariable !== "string" ||
+              coreAssumptions.length === 0
+            ) {
+              return undefined;
+            }
+
+            return {
+              domain: item.domain,
+              obviousAnswer: item.obviousAnswer,
+              mechanism: item.mechanism,
+              coreAssumptions,
+              changedConstraint: item.changedConstraint,
+              hiddenVariable: item.hiddenVariable,
+            } satisfies MessageCollisionObviousAnswer;
+          })()
+        : undefined;
+
     const frames = record.frames
       .map((frame) => {
         if (typeof frame !== "object" || frame === null) return null;
@@ -193,8 +289,16 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
         const item = frame as Record<string, unknown>;
         if (
           typeof item.id !== "string" ||
+          (item.kind !== "baseline" &&
+            item.kind !== "liability_inversion" &&
+            item.kind !== "constraint_nullifier" &&
+            item.kind !== "omission") ||
           typeof item.title !== "string" ||
           typeof item.premise !== "string" ||
+          !Array.isArray(item.attackedAssumptionIds) ||
+          item.attackedAssumptionIds.some((id) => typeof id !== "string") ||
+          !Array.isArray(item.preservedAssumptionIds) ||
+          item.preservedAssumptionIds.some((id) => typeof id !== "string") ||
           typeof item.answer !== "string" ||
           !isTraceNodeStatus(item.status)
         ) {
@@ -203,10 +307,14 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
 
         return {
           id: item.id,
+          kind: item.kind,
           title: item.title,
           premise: item.premise,
+          attackedAssumptionIds: item.attackedAssumptionIds as string[],
+          preservedAssumptionIds: item.preservedAssumptionIds as string[],
           answer: item.answer,
           status: item.status,
+          ...(typeof item.note === "string" ? { note: item.note } : {}),
         } satisfies MessageCollisionTraceFrame;
       })
       .filter((frame): frame is MessageCollisionTraceFrame => frame !== null);
@@ -220,8 +328,81 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
 
     if (!collisionMap) return undefined;
 
+    const candidates = Array.isArray(record.candidates)
+      ? record.candidates
+          .map((candidate) => {
+            if (typeof candidate !== "object" || candidate === null) return null;
+            const item = candidate as Record<string, unknown>;
+            if (
+              typeof item.id !== "string" ||
+              typeof item.insight !== "string" ||
+              typeof item.mechanism !== "string" ||
+              typeof item.targetUser !== "string" ||
+              typeof item.valueCapture !== "string" ||
+              !Array.isArray(item.supportingFrameIds) ||
+              item.supportingFrameIds.some((id) => typeof id !== "string") ||
+              typeof item.contradiction !== "string" ||
+              typeof item.whyNotBaseline !== "string" ||
+              !isCollisionCandidateStatus(item.status)
+            ) {
+              return null;
+            }
+
+            return {
+              id: item.id,
+              insight: item.insight,
+              mechanism: item.mechanism,
+              targetUser: item.targetUser,
+              valueCapture: item.valueCapture,
+              supportingFrameIds: item.supportingFrameIds as string[],
+              contradiction: item.contradiction,
+              whyNotBaseline: item.whyNotBaseline,
+              status: item.status,
+              ...(typeof item.score === "number" ? { score: item.score } : {}),
+              ...(typeof item.killedReason === "string"
+                ? { killedReason: item.killedReason }
+                : {}),
+            } satisfies MessageCollisionCandidate;
+          })
+          .filter((candidate): candidate is MessageCollisionCandidate => candidate !== null)
+      : [];
+
+    const gateResults = Array.isArray(record.gateResults)
+      ? record.gateResults
+          .map((gateResult) => {
+            if (typeof gateResult !== "object" || gateResult === null) return null;
+            const item = gateResult as Record<string, unknown>;
+            if (
+              typeof item.candidateId !== "string" ||
+              (item.trainingCheck !== "passed" &&
+                item.trainingCheck !== "failed" &&
+                item.trainingCheck !== "not_run") ||
+              (item.webCheck !== "passed" &&
+                item.webCheck !== "failed" &&
+                item.webCheck !== "unavailable" &&
+                item.webCheck !== "not_run") ||
+              !Array.isArray(item.reasons) ||
+              item.reasons.some((reason) => typeof reason !== "string")
+            ) {
+              return null;
+            }
+
+            return {
+              candidateId: item.candidateId,
+              trainingCheck: item.trainingCheck,
+              webCheck: item.webCheck,
+              reasons: item.reasons as string[],
+              ...(typeof item.revivalNote === "string"
+                ? { revivalNote: item.revivalNote }
+                : {}),
+            } satisfies MessageCollisionGateResult;
+          })
+          .filter((gateResult): gateResult is MessageCollisionGateResult => gateResult !== null)
+      : [];
+
     return {
       kind: "collision",
+      obviousAnswer,
       frames,
       collisionMap: {
         tensions: normalizeTraceStringArray(collisionMap.tensions),
@@ -231,6 +412,12 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
           collisionMap.productiveContradictions
         ),
       },
+      candidates,
+      gateResults,
+      selectedCandidateId:
+        typeof record.selectedCandidateId === "string" ? record.selectedCandidateId : undefined,
+      fallbackReason:
+        typeof record.fallbackReason === "string" ? record.fallbackReason : undefined,
     };
   }
 
@@ -2121,16 +2308,75 @@ export default function HydraChatApp() {
                                   ))
                                 ) : (
                                   <>
+                                    {message.trace.obviousAnswer && (
+                                      <div className="hydra-trace-section">
+                                        <p className="hydra-trace-section-title">
+                                          Obvious answer
+                                        </p>
+                                        <div className="hydra-trace-node">
+                                          <div className="hydra-trace-head">
+                                            <span className="hydra-trace-id">
+                                              {message.trace.obviousAnswer.domain}
+                                            </span>
+                                          </div>
+                                          <p className="hydra-trace-question">
+                                            {message.trace.obviousAnswer.obviousAnswer}
+                                          </p>
+                                          <p className="hydra-trace-answer">
+                                            Mechanism:{" "}
+                                            {summarizeTraceAnswer(
+                                              message.trace.obviousAnswer.mechanism
+                                            )}
+                                          </p>
+                                          <p className="hydra-trace-answer">
+                                            Changed constraint:{" "}
+                                            {summarizeTraceAnswer(
+                                              message.trace.obviousAnswer.changedConstraint
+                                            )}
+                                          </p>
+                                          <p className="hydra-trace-answer">
+                                            Hidden variable:{" "}
+                                            {summarizeTraceAnswer(
+                                              message.trace.obviousAnswer.hiddenVariable
+                                            )}
+                                          </p>
+                                          <div className="hydra-trace-head">
+                                            {message.trace.obviousAnswer.coreAssumptions.map(
+                                              (assumption) => (
+                                                <span
+                                                  className="hydra-badge"
+                                                  key={`${message.id}-assumption-${assumption.id}`}
+                                                >
+                                                  {assumption.id}: {assumption.label}
+                                                </span>
+                                              )
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {message.trace.frames.map((frame) => (
                                       <div className="hydra-trace-node" key={`${message.id}-${frame.id}`}>
                                         <div className="hydra-trace-head">
                                           <span className="hydra-trace-id">{frame.title}</span>
+                                          <span className="hydra-badge">{frame.kind.replace(/_/g, " ")}</span>
                                           <span className="hydra-badge">{frame.status}</span>
+                                          {frame.attackedAssumptionIds.length > 0 && (
+                                            <span className="hydra-badge">
+                                              attacks {frame.attackedAssumptionIds.join(", ")}
+                                            </span>
+                                          )}
                                         </div>
                                         <p className="hydra-trace-premise">{frame.premise}</p>
                                         <p className="hydra-trace-answer">
                                           {summarizeTraceAnswer(frame.answer)}
                                         </p>
+                                        {frame.note && (
+                                          <p className="hydra-trace-answer">
+                                            {summarizeTraceAnswer(frame.note)}
+                                          </p>
+                                        )}
                                       </div>
                                     ))}
 
@@ -2194,6 +2440,110 @@ export default function HydraChatApp() {
                                             </li>
                                           ))}
                                         </ul>
+                                      </div>
+                                    )}
+
+                                    {message.trace.candidates.length > 0 && (
+                                      <div className="hydra-trace-section">
+                                        <p className="hydra-trace-section-title">Candidates</p>
+                                        {message.trace.candidates.map((candidate) => {
+                                          const gate =
+                                            message.trace?.kind === "collision"
+                                              ? message.trace.gateResults.find(
+                                                  (result) =>
+                                                    result.candidateId === candidate.id
+                                                )
+                                              : undefined;
+
+                                          return (
+                                            <div
+                                              className="hydra-trace-node"
+                                              key={`${message.id}-candidate-${candidate.id}`}
+                                            >
+                                              <div className="hydra-trace-head">
+                                                <span className="hydra-trace-id">
+                                                  {candidate.id}
+                                                </span>
+                                                <span className="hydra-badge">
+                                                  {candidate.status}
+                                                </span>
+                                                {message.trace?.kind === "collision" &&
+                                                  message.trace.selectedCandidateId ===
+                                                  candidate.id && (
+                                                  <span className="hydra-badge">selected</span>
+                                                )}
+                                              </div>
+                                              <p className="hydra-trace-question">
+                                                {candidate.insight}
+                                              </p>
+                                              <p className="hydra-trace-answer">
+                                                Mechanism:{" "}
+                                                {summarizeTraceAnswer(candidate.mechanism)}
+                                              </p>
+                                              <p className="hydra-trace-answer">
+                                                Target user: {candidate.targetUser}
+                                              </p>
+                                              <p className="hydra-trace-answer">
+                                                Value capture: {candidate.valueCapture}
+                                              </p>
+                                              <p className="hydra-trace-answer">
+                                                Why not baseline:{" "}
+                                                {summarizeTraceAnswer(candidate.whyNotBaseline)}
+                                              </p>
+                                              <p className="hydra-trace-answer">
+                                                Depends on frames{" "}
+                                                {candidate.supportingFrameIds.join(", ")}
+                                              </p>
+                                              <p className="hydra-trace-answer">
+                                                {summarizeTraceAnswer(candidate.contradiction)}
+                                              </p>
+                                              {candidate.killedReason && (
+                                                <p className="hydra-trace-answer">
+                                                  {summarizeTraceAnswer(candidate.killedReason)}
+                                                </p>
+                                              )}
+                                              {gate && (
+                                                <>
+                                                  <div className="hydra-trace-head">
+                                                    <span className="hydra-badge">
+                                                      training {gate.trainingCheck}
+                                                    </span>
+                                                    <span className="hydra-badge">
+                                                      web {gate.webCheck}
+                                                    </span>
+                                                  </div>
+                                                  {gate.reasons.length > 0 && (
+                                                    <ul className="hydra-trace-list">
+                                                      {gate.reasons.map((reason, index) => (
+                                                        <li
+                                                          key={`${message.id}-${candidate.id}-reason-${index}`}
+                                                        >
+                                                          {summarizeTraceAnswer(reason)}
+                                                        </li>
+                                                      ))}
+                                                    </ul>
+                                                  )}
+                                                  {gate.revivalNote && (
+                                                    <p className="hydra-trace-answer">
+                                                      {summarizeTraceAnswer(gate.revivalNote)}
+                                                    </p>
+                                                  )}
+                                                </>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+
+                                    {message.trace.fallbackReason && (
+                                      <div className="hydra-trace-section">
+                                        <p className="hydra-trace-section-title">
+                                          Fallback reason
+                                        </p>
+                                        <p className="hydra-trace-answer">
+                                          {summarizeTraceAnswer(message.trace.fallbackReason)}
+                                        </p>
                                       </div>
                                     )}
                                   </>
