@@ -1,7 +1,7 @@
 import { call, parseJSON } from "./openrouter";
 import { MODELS } from "./models";
 import { reviewAndRevise, type ReviewSpec } from "./verify";
-import type { ChatMessage, EngineResponse, Rigor } from "./types";
+import type { ChatMessage, EngineResponse, ProgressReporter, Rigor } from "./types";
 
 const DISCOVER_DRAFT_FALLBACK =
   "Hydra could not finish the creative exploration within the serverless time budget. Please retry if you want another pass.";
@@ -111,10 +111,10 @@ Audit it for feasibility.
 
 Return concise notes only.`;
 
-const ANALYSIS_TIMEOUT_MS = 7000;
-const PROPOSAL_TIMEOUT_MS = 8000;
-const REVIEW_TIMEOUT_MS = 6000;
-const REVISION_TIMEOUT_MS = 8000;
+const ANALYSIS_TIMEOUT_MS = 18_000;
+const PROPOSAL_TIMEOUT_MS = 24_000;
+const REVIEW_TIMEOUT_MS = 18_000;
+const REVISION_TIMEOUT_MS = 24_000;
 
 const ANALYSIS_MAX_TOKENS = 1200;
 const PROPOSAL_MAX_TOKENS = 1800;
@@ -154,6 +154,11 @@ interface CritiqueJob {
   label: string;
   modelId: string;
   prompt: string;
+}
+
+async function notifyProgress(onProgress: ProgressReporter | undefined, label: string) {
+  if (!onProgress) return;
+  await onProgress({ label });
 }
 
 function buildDraftPrompt(query: string, rigorous: boolean) {
@@ -342,7 +347,8 @@ Dependency map:
 ${dependencyMap}`;
 }
 
-async function runAssumptionBreaker(query: string) {
+async function runAssumptionBreaker(query: string, onProgress?: ProgressReporter) {
+  await notifyProgress(onProgress, "Breaking assumptions and naming hard constraints");
   const raw = await call(
     MODELS.analyst.id,
     [
@@ -365,8 +371,10 @@ async function deriveConstraintFirstProposal(args: {
   query: string;
   analysis: FirstPrinciplesAnalysis;
   rigorous: boolean;
+  onProgress?: ProgressReporter;
 }) {
-  const { query, analysis, rigorous } = args;
+  const { query, analysis, rigorous, onProgress } = args;
+  await notifyProgress(onProgress, "Deriving options from hard constraints");
   const proposal = await call(
     MODELS.analyst.id,
     [
@@ -398,8 +406,9 @@ async function critiqueProposal(args: {
   analysis: FirstPrinciplesAnalysis;
   proposal: string;
   rigor: Rigor;
+  onProgress?: ProgressReporter;
 }) {
-  const { query, analysis, proposal, rigor } = args;
+  const { query, analysis, proposal, rigor, onProgress } = args;
   const analysisBlock = formatAnalysis(analysis);
 
   const critiqueJobs: CritiqueJob[] = [
@@ -422,6 +431,11 @@ async function critiqueProposal(args: {
       prompt: PRACTICALITY_REVIEW_PROMPT,
     });
   }
+
+  await notifyProgress(
+    onProgress,
+    `Stress-testing the proposal with ${critiqueJobs.map((job) => job.label.toLowerCase()).join(", ")}`
+  );
 
   const settled = await Promise.allSettled(
     critiqueJobs.map((job) =>
@@ -464,8 +478,10 @@ async function reviseDiscoverFromAnalysis(args: {
   analysis: FirstPrinciplesAnalysis;
   proposal: string;
   notes: string[];
+  onProgress?: ProgressReporter;
 }) {
-  const { query, analysis, proposal, notes } = args;
+  const { query, analysis, proposal, notes, onProgress } = args;
+  await notifyProgress(onProgress, "Revising the final first-principles answer");
   const revised = await call(
     MODELS.analyst.id,
     [
@@ -552,8 +568,9 @@ export async function refineDiscover(args: {
   messages: ChatMessage[];
   draft: string;
   rigor: Rigor;
+  onProgress?: ProgressReporter;
 }): Promise<EngineResponse> {
-  const { messages, draft, rigor } = args;
+  const { messages, draft, rigor, onProgress } = args;
   const query = messages[messages.length - 1]?.content ?? "";
   const seed = draft.trim() || DISCOVER_DRAFT_FALLBACK;
 
@@ -565,13 +582,14 @@ export async function refineDiscover(args: {
     };
   }
 
-  const analysis = await runAssumptionBreaker(query);
+  const analysis = await runAssumptionBreaker(query, onProgress);
   if (!analysis) {
     const revised = await reviewAndRevise({
       query,
       draft: seed,
       reviewSpecs: buildFallbackReviewSpecs(rigor),
       revisionInstructions: DISCOVER_REVISION_INSTRUCTIONS,
+      onProgress,
     });
 
     return {
@@ -585,6 +603,7 @@ export async function refineDiscover(args: {
     query,
     analysis,
     rigorous: rigor === "rigorous",
+    onProgress,
   });
 
   if (!proposal) {
@@ -593,6 +612,7 @@ export async function refineDiscover(args: {
       draft: seed,
       reviewSpecs: buildFallbackReviewSpecs(rigor),
       revisionInstructions: DISCOVER_REVISION_INSTRUCTIONS,
+      onProgress,
     });
 
     return {
@@ -607,6 +627,7 @@ export async function refineDiscover(args: {
     analysis,
     proposal,
     rigor,
+    onProgress,
   });
 
   if (notes.length === 0) {
@@ -622,6 +643,7 @@ export async function refineDiscover(args: {
     analysis,
     proposal,
     notes,
+    onProgress,
   });
 
   return {

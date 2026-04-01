@@ -5,7 +5,7 @@ import { draftThink } from "@/lib/hydra/engine-think";
 import { draftDiscover } from "@/lib/hydra/engine-discover";
 import { isChatMessage } from "@/lib/hydra/types";
 
-export const maxDuration = 55;
+export const maxDuration = 300;
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {

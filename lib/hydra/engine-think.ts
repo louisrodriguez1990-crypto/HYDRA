@@ -1,7 +1,14 @@
 import { call, parseJSON } from "./openrouter";
 import { MODELS } from "./models";
 import { reviewAndRevise, type ReviewSpec } from "./verify";
-import type { ChatMessage, CompoundTrace, CompoundTraceNode, EngineResponse, Rigor } from "./types";
+import type {
+  ChatMessage,
+  CompoundTrace,
+  CompoundTraceNode,
+  EngineResponse,
+  ProgressReporter,
+  Rigor,
+} from "./types";
 
 const THINK_DRAFT_FALLBACK =
   "Hydra could not finish the deeper analysis within the serverless time budget. Please retry if you want another pass.";
@@ -62,13 +69,13 @@ Rules:
 - Keep the answer concise and readable.
 - Do not expose internal reasoning steps or reviewer notes.`;
 
-const FOLLOWUP_BUDGET_MS = 45_000;
-const RESPONSE_RESERVE_MS = 5_000;
-const DECOMPOSE_TIMEOUT_MS = 2_500;
-const SUBPROBLEM_PROPOSAL_TIMEOUT_MS = 4_500;
-const SUBPROBLEM_CRITIQUE_TIMEOUT_MS = 3_500;
-const SUBPROBLEM_REVISION_TIMEOUT_MS = 4_500;
-const MERGE_TIMEOUT_MS = 6_000;
+const FOLLOWUP_BUDGET_MS = 270_000;
+const RESPONSE_RESERVE_MS = 15_000;
+const DECOMPOSE_TIMEOUT_MS = 12_000;
+const SUBPROBLEM_PROPOSAL_TIMEOUT_MS = 28_000;
+const SUBPROBLEM_CRITIQUE_TIMEOUT_MS = 18_000;
+const SUBPROBLEM_REVISION_TIMEOUT_MS = 24_000;
+const MERGE_TIMEOUT_MS = 30_000;
 
 const DECOMPOSE_MAX_TOKENS = 400;
 const SUBPROBLEM_PROPOSAL_MAX_TOKENS = 900;
@@ -90,6 +97,11 @@ interface DecompositionCandidate {
 interface TimeBudget {
   available: () => number;
   timeoutFor: (targetMs: number, minimumMs?: number) => number | null;
+}
+
+async function notifyProgress(onProgress: ProgressReporter | undefined, label: string) {
+  if (!onProgress) return;
+  await onProgress({ label });
 }
 
 function buildDraftPrompt(query: string, rigorous: boolean) {
@@ -217,7 +229,12 @@ function validateSubproblems(raw: unknown[]) {
   return normalized;
 }
 
-async function decomposeThink(query: string, budget: TimeBudget) {
+async function decomposeThink(
+  query: string,
+  budget: TimeBudget,
+  onProgress?: ProgressReporter
+) {
+  await notifyProgress(onProgress, "Breaking the problem into subproblems");
   const timeoutMs = budget.timeoutFor(DECOMPOSE_TIMEOUT_MS, 800);
   if (timeoutMs === null) return null;
 
@@ -279,17 +296,13 @@ Dependency inputs:
 ${formatDependencyContext(subproblem, resolvedSubproblems)}`;
 }
 
-function buildPartialTraceNode(
-  subproblem: ThinkSubproblem,
-  answer: string,
-  dependencyWasPartial = false
-): CompoundTraceNode {
+function buildPartialTraceNode(subproblem: ThinkSubproblem, answer: string): CompoundTraceNode {
   return {
     id: subproblem.id,
     question: subproblem.question,
     dependsOn: subproblem.dependsOn,
     answer: answer.trim() || THINK_SUBPROBLEM_FALLBACK,
-    status: dependencyWasPartial ? "partial" : "partial",
+    status: "partial",
   };
 }
 
@@ -298,17 +311,19 @@ async function solveSubproblem(args: {
   subproblem: ThinkSubproblem;
   resolvedSubproblems: Map<string, CompoundTraceNode>;
   budget: TimeBudget;
+  onProgress?: ProgressReporter;
 }) {
-  const { query, subproblem, resolvedSubproblems, budget } = args;
+  const { query, subproblem, resolvedSubproblems, budget, onProgress } = args;
   const dependencyWasPartial = subproblem.dependsOn.some((dependencyId) => {
     const dependency = resolvedSubproblems.get(dependencyId);
     return !dependency || dependency.status !== "complete";
   });
   const prompt = buildSubproblemUserPrompt(query, subproblem, resolvedSubproblems);
 
+  await notifyProgress(onProgress, `Solving subproblem ${subproblem.id}`);
   const proposalTimeoutMs = budget.timeoutFor(SUBPROBLEM_PROPOSAL_TIMEOUT_MS);
   if (proposalTimeoutMs === null) {
-    return buildPartialTraceNode(subproblem, "", dependencyWasPartial);
+    return buildPartialTraceNode(subproblem, "");
   }
 
   const proposal = await call(
@@ -325,12 +340,13 @@ async function solveSubproblem(args: {
   );
 
   if (!proposal.trim()) {
-    return buildPartialTraceNode(subproblem, "", dependencyWasPartial);
+    return buildPartialTraceNode(subproblem, "");
   }
 
+  await notifyProgress(onProgress, `Critiquing subproblem ${subproblem.id}`);
   const critiqueTimeoutMs = budget.timeoutFor(SUBPROBLEM_CRITIQUE_TIMEOUT_MS);
   if (critiqueTimeoutMs === null) {
-    return buildPartialTraceNode(subproblem, proposal, dependencyWasPartial);
+    return buildPartialTraceNode(subproblem, proposal);
   }
 
   const critique = await call(
@@ -353,12 +369,13 @@ ${proposal}`,
   );
 
   if (!critique.trim()) {
-    return buildPartialTraceNode(subproblem, proposal, dependencyWasPartial);
+    return buildPartialTraceNode(subproblem, proposal);
   }
 
+  await notifyProgress(onProgress, `Revising subproblem ${subproblem.id}`);
   const revisionTimeoutMs = budget.timeoutFor(SUBPROBLEM_REVISION_TIMEOUT_MS);
   if (revisionTimeoutMs === null) {
-    return buildPartialTraceNode(subproblem, proposal, dependencyWasPartial);
+    return buildPartialTraceNode(subproblem, proposal);
   }
 
   const revised = await call(
@@ -384,7 +401,7 @@ ${critique}`,
   );
 
   if (!revised.trim()) {
-    return buildPartialTraceNode(subproblem, proposal, dependencyWasPartial);
+    return buildPartialTraceNode(subproblem, proposal);
   }
 
   return {
@@ -431,15 +448,22 @@ async function runCompoundThink(args: {
   draft: string;
   subproblems: ThinkSubproblem[];
   budget: TimeBudget;
+  onProgress?: ProgressReporter;
 }): Promise<EngineResponse> {
-  const { query, draft, subproblems, budget } = args;
+  const { query, draft, subproblems, budget, onProgress } = args;
   const resolvedSubproblems = new Map<string, CompoundTraceNode>();
   const independentSubproblems = subproblems.filter((subproblem) => subproblem.dependsOn.length === 0);
   const dependentSubproblems = subproblems.filter((subproblem) => subproblem.dependsOn.length > 0);
 
+  if (independentSubproblems.length > 0) {
+    await notifyProgress(
+      onProgress,
+      `Working through subproblems ${independentSubproblems.map((subproblem) => subproblem.id).join(", ")}`
+    );
+  }
   const independentResults = await Promise.all(
     independentSubproblems.map((subproblem) =>
-      solveSubproblem({ query, subproblem, resolvedSubproblems, budget })
+      solveSubproblem({ query, subproblem, resolvedSubproblems, budget, onProgress })
     )
   );
 
@@ -448,9 +472,13 @@ async function runCompoundThink(args: {
   });
 
   if (dependentSubproblems.length > 0) {
+    await notifyProgress(
+      onProgress,
+      `Using earlier results to solve ${dependentSubproblems.map((subproblem) => subproblem.id).join(", ")}`
+    );
     const dependentResults = await Promise.all(
       dependentSubproblems.map((subproblem) =>
-        solveSubproblem({ query, subproblem, resolvedSubproblems, budget })
+        solveSubproblem({ query, subproblem, resolvedSubproblems, budget, onProgress })
       )
     );
 
@@ -466,6 +494,7 @@ async function runCompoundThink(args: {
   );
   const trace: CompoundTrace = { kind: "compound", nodes: traceNodes };
 
+  await notifyProgress(onProgress, "Merging subproblem interactions into a final answer");
   const mergeTimeoutMs = budget.timeoutFor(MERGE_TIMEOUT_MS, 1_200);
   if (mergeTimeoutMs === null) {
     return {
@@ -561,8 +590,9 @@ export async function refineThink(args: {
   messages: ChatMessage[];
   draft: string;
   rigor: Rigor;
+  onProgress?: ProgressReporter;
 }): Promise<EngineResponse> {
-  const { messages, draft, rigor } = args;
+  const { messages, draft, rigor, onProgress } = args;
   const query = messages[messages.length - 1]?.content ?? "";
   const seed = draft.trim() || THINK_DRAFT_FALLBACK;
 
@@ -576,7 +606,7 @@ export async function refineThink(args: {
 
   if (rigor === "rigorous") {
     const budget = createTimeBudget(FOLLOWUP_BUDGET_MS, RESPONSE_RESERVE_MS);
-    const decomposition = await decomposeThink(query, budget);
+    const decomposition = await decomposeThink(query, budget, onProgress);
 
     if (decomposition && decomposition.length > 0) {
       return runCompoundThink({
@@ -584,6 +614,7 @@ export async function refineThink(args: {
         draft: seed,
         subproblems: decomposition,
         budget,
+        onProgress,
       });
     }
   }
@@ -593,6 +624,7 @@ export async function refineThink(args: {
     draft: seed,
     reviewSpecs: buildReviewSpecs(rigor),
     revisionInstructions: THINK_REVISION_INSTRUCTIONS,
+    onProgress,
   });
 
   return {

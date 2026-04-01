@@ -2,10 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { normalizeRigor } from "@/lib/hydra/controller";
 import { refineThink } from "@/lib/hydra/engine-think";
 import { refineDiscover } from "@/lib/hydra/engine-discover";
-import { isChatMessage, isTopology } from "@/lib/hydra/types";
+import { isChatMessage, isTopology, type ProgressUpdate } from "@/lib/hydra/types";
 
-export const maxDuration = 55;
+export const maxDuration = 300;
 export const runtime = "nodejs";
+
+const encoder = new TextEncoder();
+
+function encodeEvent(event: string, payload: unknown) {
+  return encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,20 +41,59 @@ export async function POST(req: NextRequest) {
 
     console.log(`[Hydra] followup ${topology} | rigor: ${rigor}`);
 
-    const result =
-      topology === "discover"
-        ? await refineDiscover({ messages, draft, rigor })
-        : await refineThink({ messages, draft, rigor });
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        let lastLabel: string | null = null;
 
-    return NextResponse.json({
-      content: result.content,
-      metadata: {
-        topology,
-        rigor,
-        latencyMs: Date.now() - start,
-        status: result.status,
-        needsFollowup: false,
-        trace: result.trace,
+        const sendStage = (label: string) => {
+          if (!label || label === lastLabel) return;
+          lastLabel = label;
+          controller.enqueue(encodeEvent("stage", { label }));
+        };
+
+        const onProgress = async (update: ProgressUpdate) => {
+          sendStage(update.label);
+        };
+
+        try {
+          sendStage("Preparing a deeper reasoning pass");
+
+          const result =
+            topology === "discover"
+              ? await refineDiscover({ messages, draft, rigor, onProgress })
+              : await refineThink({ messages, draft, rigor, onProgress });
+
+          controller.enqueue(
+            encodeEvent("final", {
+              content: result.content,
+              metadata: {
+                topology,
+                rigor,
+                latencyMs: Date.now() - start,
+                status: result.status,
+                needsFollowup: false,
+                trace: result.trace,
+              },
+            })
+          );
+        } catch (error) {
+          console.error("[Hydra] Follow-up error:", error);
+          controller.enqueue(
+            encodeEvent("error", {
+              error: "Hydra follow-up encountered an error.",
+            })
+          );
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
       },
     });
   } catch (error) {

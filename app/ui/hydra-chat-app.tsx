@@ -39,6 +39,7 @@ interface ChatMessage {
   status?: MessageStatus;
   responseToId?: string;
   trace?: MessageTrace;
+  progressSteps?: string[];
 }
 
 interface ChatThread {
@@ -221,6 +222,9 @@ function loadThreads() {
             responseToId:
               typeof message.responseToId === "string" ? message.responseToId : undefined,
             trace: parseMessageTrace(message.trace),
+            progressSteps: Array.isArray(message.progressSteps)
+              ? message.progressSteps.filter((step): step is string => typeof step === "string")
+              : undefined,
           }))
         : [],
     })) as ChatThread[];
@@ -448,7 +452,13 @@ export default function HydraChatApp() {
               ...thread,
               updatedAt: refiningAt,
               messages: thread.messages.map((message) =>
-                message.id === assistantMessageId ? { ...message, status: "refining" } : message
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      status: "refining",
+                      progressSteps: ["Preparing a deeper reasoning pass"],
+                    }
+                  : message
               ),
             }
           : thread
@@ -466,44 +476,213 @@ export default function HydraChatApp() {
           rigor,
         }),
       });
-      const data = await res.json();
-      const finishedAt = new Date().toISOString();
-      const nextTrace = parseMessageTrace(data.metadata?.trace);
+      const contentType = res.headers.get("content-type") ?? "";
 
-      setThreads((current) =>
-        current.map((thread) => {
-          if (thread.id !== threadId) return thread;
-          if (getLastUserMessageId(thread.messages) !== responseToId) return thread;
-          if (!thread.messages.some((message) => message.id === assistantMessageId)) return thread;
+      if (!res.body || !contentType.includes("text/event-stream")) {
+        const data = await res.json();
+        const finishedAt = new Date().toISOString();
+        const nextTrace = parseMessageTrace(data.metadata?.trace);
 
-          const nextText =
-            typeof data.content === "string" && data.content.trim() ? data.content : draft;
-          const nextStatus: MessageStatus =
-            res.ok && data.metadata?.status !== "fallback" ? "final" : "fallback";
+        setThreads((current) =>
+          current.map((thread) => {
+            if (thread.id !== threadId) return thread;
+            if (getLastUserMessageId(thread.messages) !== responseToId) return thread;
+            if (!thread.messages.some((message) => message.id === assistantMessageId)) return thread;
 
-          return {
-            ...thread,
-            updatedAt: finishedAt,
-            messages: thread.messages.map((message) =>
-              message.id === assistantMessageId
-                ? {
-                    ...message,
-                    text: nextText,
-                    topology,
-                    rigor,
-                    latency:
-                      typeof data.metadata?.latencyMs === "number"
-                        ? data.metadata.latencyMs
-                        : message.latency,
-                    status: nextStatus,
-                    error: !res.ok,
-                    trace: nextTrace ?? message.trace,
-                  }
-                : message
-            ),
-          };
-        })
-      );
+            const nextText =
+              typeof data.content === "string" && data.content.trim() ? data.content : draft;
+            const nextStatus: MessageStatus =
+              res.ok && data.metadata?.status !== "fallback" ? "final" : "fallback";
+
+            return {
+              ...thread,
+              updatedAt: finishedAt,
+              messages: thread.messages.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      text: nextText,
+                      topology,
+                      rigor,
+                      latency:
+                        typeof data.metadata?.latencyMs === "number"
+                          ? data.metadata.latencyMs
+                          : message.latency,
+                      status: nextStatus,
+                      error: !res.ok,
+                      trace: nextTrace ?? message.trace,
+                      progressSteps: undefined,
+                    }
+                  : message
+              ),
+            };
+          })
+        );
+
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let sawTerminalEvent = false;
+
+      const appendProgressStep = (label: string) => {
+        const progressAt = new Date().toISOString();
+
+        setThreads((current) =>
+          current.map((thread) => {
+            if (thread.id !== threadId) return thread;
+            if (getLastUserMessageId(thread.messages) !== responseToId) return thread;
+            if (!thread.messages.some((message) => message.id === assistantMessageId)) return thread;
+
+            return {
+              ...thread,
+              updatedAt: progressAt,
+              messages: thread.messages.map((message) => {
+                if (message.id !== assistantMessageId) return message;
+
+                const currentSteps = message.progressSteps ?? [];
+                if (currentSteps[currentSteps.length - 1] === label) {
+                  return message;
+                }
+
+                return {
+                  ...message,
+                  status: "refining",
+                  progressSteps: [...currentSteps, label].slice(-8),
+                };
+              }),
+            };
+          })
+        );
+      };
+
+      const applyFinalData = (data: Record<string, unknown>, errored: boolean) => {
+        const finishedAt = new Date().toISOString();
+        const nextTrace = parseMessageTrace((data.metadata as Record<string, unknown> | undefined)?.trace);
+
+        setThreads((current) =>
+          current.map((thread) => {
+            if (thread.id !== threadId) return thread;
+            if (getLastUserMessageId(thread.messages) !== responseToId) return thread;
+            if (!thread.messages.some((message) => message.id === assistantMessageId)) return thread;
+
+            const metadata =
+              typeof data.metadata === "object" && data.metadata !== null
+                ? (data.metadata as Record<string, unknown>)
+                : undefined;
+            const nextText =
+              typeof data.content === "string" && data.content.trim()
+                ? data.content
+                : typeof data.error === "string" && data.error.trim()
+                  ? data.error
+                  : draft;
+            const nextStatus: MessageStatus =
+              !errored && metadata?.status !== "fallback" ? "final" : "fallback";
+
+            return {
+              ...thread,
+              updatedAt: finishedAt,
+              messages: thread.messages.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      text: nextText,
+                      topology,
+                      rigor,
+                      latency:
+                        typeof metadata?.latencyMs === "number"
+                          ? metadata.latencyMs
+                          : message.latency,
+                      status: nextStatus,
+                      error: errored,
+                      trace: nextTrace ?? message.trace,
+                      progressSteps: undefined,
+                    }
+                  : message
+              ),
+            };
+          })
+        );
+      };
+
+      const handleEvent = (eventName: string, rawData: string) => {
+        if (!rawData.trim()) return;
+
+        let data: Record<string, unknown>;
+        try {
+          data = JSON.parse(rawData) as Record<string, unknown>;
+        } catch {
+          return;
+        }
+
+        if (eventName === "stage") {
+          if (typeof data.label === "string" && data.label.trim()) {
+            appendProgressStep(data.label);
+          }
+          return;
+        }
+
+        if (eventName === "final") {
+          sawTerminalEvent = true;
+          applyFinalData(data, false);
+          return;
+        }
+
+        if (eventName === "error") {
+          sawTerminalEvent = true;
+          applyFinalData(data, true);
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        let boundaryIndex = buffer.indexOf("\n\n");
+
+        while (boundaryIndex !== -1) {
+          const rawEvent = buffer.slice(0, boundaryIndex);
+          buffer = buffer.slice(boundaryIndex + 2);
+
+          let eventName = "message";
+          const dataLines: string[] = [];
+
+          for (const line of rawEvent.split(/\r?\n/)) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+            }
+          }
+
+          handleEvent(eventName, dataLines.join("\n"));
+          boundaryIndex = buffer.indexOf("\n\n");
+        }
+      }
+
+      if (!sawTerminalEvent) {
+        const failedAt = new Date().toISOString();
+        setThreads((current) =>
+          current.map((thread) => {
+            if (thread.id !== threadId) return thread;
+            if (getLastUserMessageId(thread.messages) !== responseToId) return thread;
+            if (!thread.messages.some((message) => message.id === assistantMessageId)) return thread;
+
+            return {
+              ...thread,
+              updatedAt: failedAt,
+              messages: thread.messages.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, status: "fallback", error: true, progressSteps: undefined }
+                  : message
+              ),
+            };
+          })
+        );
+      }
     } catch {
       const failedAt = new Date().toISOString();
       setThreads((current) =>
@@ -517,7 +696,7 @@ export default function HydraChatApp() {
             updatedAt: failedAt,
             messages: thread.messages.map((message) =>
               message.id === assistantMessageId
-                ? { ...message, status: "fallback", error: true }
+                ? { ...message, status: "fallback", error: true, progressSteps: undefined }
                 : message
             ),
           };
@@ -1007,6 +1186,47 @@ export default function HydraChatApp() {
           font-size: 13px;
           line-height: 1.6;
         }
+        .hydra-progress {
+          margin-top: 14px;
+          padding: 12px 14px;
+          border-radius: 14px;
+          border: 1px solid #2d3a35;
+          background: #1f2624;
+        }
+        .hydra-progress-title {
+          margin: 0;
+          color: #d8f3ea;
+          font-size: 13px;
+          font-weight: 600;
+          line-height: 1.5;
+        }
+        .hydra-progress-list {
+          list-style: none;
+          margin: 10px 0 0;
+          padding: 0;
+          display: grid;
+          gap: 8px;
+        }
+        .hydra-progress-step {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          gap: 10px;
+          align-items: start;
+          color: #b8c9c3;
+          font-size: 13px;
+          line-height: 1.55;
+        }
+        .hydra-progress-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 999px;
+          margin-top: 6px;
+          background: #4b635b;
+        }
+        .hydra-progress-dot.is-active {
+          background: #10a37f;
+          box-shadow: 0 0 0 4px rgba(16, 163, 127, 0.12);
+        }
         .hydra-trace {
           margin-top: 14px;
           padding-top: 14px;
@@ -1328,6 +1548,24 @@ export default function HydraChatApp() {
                           {STATUS_COPY[message.status]}
                         </p>
                       )}
+                      {message.role === "assistant" &&
+                        message.status === "refining" &&
+                        (message.progressSteps?.length ?? 0) > 0 && (
+                          <div className="hydra-progress" aria-live="polite">
+                            <p className="hydra-progress-title">Hydra is thinking</p>
+                            <ul className="hydra-progress-list">
+                              {message.progressSteps?.map((step, index, steps) => (
+                                <li className="hydra-progress-step" key={`${message.id}-step-${index}`}>
+                                  <span
+                                    className={`hydra-progress-dot${index === steps.length - 1 ? " is-active" : ""}`}
+                                    aria-hidden="true"
+                                  />
+                                  <span>{step}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                       {message.role === "assistant" &&
                         message.trace?.kind === "compound" &&
                         message.trace.nodes.length > 0 && (

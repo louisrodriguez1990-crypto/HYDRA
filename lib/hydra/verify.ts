@@ -1,6 +1,6 @@
 import { MODELS } from "./models";
 import { call } from "./openrouter";
-import type { VerificationResult } from "./types";
+import type { ProgressReporter, VerificationResult } from "./types";
 
 export interface ReviewSpec {
   label: string;
@@ -10,8 +10,8 @@ export interface ReviewSpec {
 
 const REVIEW_MAX_TOKENS = 900;
 const REVISION_MAX_TOKENS = 1800;
-const REVIEW_TIMEOUT_MS = 12000;
-const REVISION_TIMEOUT_MS = 12000;
+const REVIEW_TIMEOUT_MS = 20000;
+const REVISION_TIMEOUT_MS = 25000;
 
 const REVISION_PROMPT = `You are revising a draft answer using reviewer notes.
 
@@ -28,11 +28,18 @@ export async function reviewAndRevise(args: {
   draft: string;
   reviewSpecs: ReviewSpec[];
   revisionInstructions: string;
+  onProgress?: ProgressReporter;
 }): Promise<VerificationResult> {
-  const { query, draft, reviewSpecs, revisionInstructions } = args;
+  const { query, draft, reviewSpecs, revisionInstructions, onProgress } = args;
 
   if (!draft.trim() || reviewSpecs.length === 0) {
     return { content: draft, revised: false, findings: 0 };
+  }
+
+  if (onProgress) {
+    await onProgress({
+      label: `Running ${reviewSpecs.map((spec) => spec.label.toLowerCase()).join(" and ")}`,
+    });
   }
 
   const settled = await Promise.allSettled(
@@ -70,6 +77,10 @@ export async function reviewAndRevise(args: {
 
   if (notes.length === 0) {
     return { content: draft, revised: false, findings: 0 };
+  }
+
+  if (onProgress) {
+    await onProgress({ label: "Revising the answer" });
   }
 
   const revised = await call(

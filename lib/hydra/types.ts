@@ -32,6 +32,12 @@ export interface CompoundTrace {
   nodes: CompoundTraceNode[];
 }
 
+export interface ProgressUpdate {
+  label: string;
+}
+
+export type ProgressReporter = (update: ProgressUpdate) => void | Promise<void>;
+
 export interface EngineResponse {
   content: string;
   status: ResponseStatus;
