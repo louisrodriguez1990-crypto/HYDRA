@@ -34,10 +34,14 @@ export interface CompoundTrace {
 
 export interface CollisionTraceFrame {
   id: string;
+  kind: "baseline" | "liability_inversion" | "constraint_nullifier" | "omission";
   title: string;
   premise: string;
+  attackedAssumptionIds: string[];
+  preservedAssumptionIds: string[];
   answer: string;
   status: TraceNodeStatus;
+  note?: string;
 }
 
 export interface CollisionMapTrace {
@@ -47,10 +51,53 @@ export interface CollisionMapTrace {
   productiveContradictions: string[];
 }
 
+export interface CollisionAssumption {
+  id: string;
+  label: string;
+}
+
+export interface CollisionObviousAnswer {
+  domain: string;
+  obviousAnswer: string;
+  mechanism: string;
+  coreAssumptions: CollisionAssumption[];
+  changedConstraint: string;
+  hiddenVariable: string;
+}
+
+export type CollisionCandidateStatus = "survived" | "killed" | "fallback";
+
+export interface CollisionCandidate {
+  id: string;
+  insight: string;
+  mechanism: string;
+  targetUser: string;
+  valueCapture: string;
+  supportingFrameIds: string[];
+  contradiction: string;
+  whyNotBaseline: string;
+  score?: number;
+  status: CollisionCandidateStatus;
+  killedReason?: string;
+}
+
+export interface CollisionCandidateGateResult {
+  candidateId: string;
+  trainingCheck: "passed" | "failed" | "not_run";
+  webCheck: "passed" | "failed" | "unavailable" | "not_run";
+  reasons: string[];
+  revivalNote?: string;
+}
+
 export interface CollisionTrace {
   kind: "collision";
+  obviousAnswer: CollisionObviousAnswer;
   frames: CollisionTraceFrame[];
   collisionMap: CollisionMapTrace;
+  candidates: CollisionCandidate[];
+  gateResults: CollisionCandidateGateResult[];
+  selectedCandidateId?: string;
+  fallbackReason?: string;
 }
 
 export type ReasoningTrace = CompoundTrace | CollisionTrace;
