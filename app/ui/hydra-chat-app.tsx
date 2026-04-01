@@ -79,6 +79,18 @@ function deriveTitle(input: string) {
   return collapsed.length > 48 ? `${collapsed.slice(0, 48).trimEnd()}...` : collapsed;
 }
 
+function getThreadPreview(thread: ChatThread) {
+  const lastMessage = thread.messages[thread.messages.length - 1];
+  if (!lastMessage) return "No messages yet";
+
+  const collapsed = lastMessage.text.replace(/\s+/g, " ").trim();
+  const prefix = lastMessage.role === "user" ? "You: " : "Hydra: ";
+  const preview = collapsed || "No preview available";
+  const combined = `${prefix}${preview}`;
+
+  return combined.length > 78 ? `${combined.slice(0, 78).trimEnd()}...` : combined;
+}
+
 function isMessageStatus(value: unknown): value is MessageStatus {
   return (
     value === "draft" || value === "refining" || value === "final" || value === "fallback"
@@ -572,22 +584,471 @@ export default function HydraChatApp() {
   return (
     <div className="hydra-app">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&display=swap');
-        * { box-sizing: border-box; } body { margin: 0; background: radial-gradient(circle at top left, rgba(96,165,250,.08), transparent 28%), radial-gradient(circle at bottom right, rgba(245,158,11,.08), transparent 24%), #09090b; color: #f8fafc; font-family: 'IBM Plex Mono', monospace; } button, textarea { font: inherit; } ::selection { background: rgba(96,165,250,.24); color: #fff; }
-        .hydra-app { min-height: 100vh; padding: 16px; } .hydra-shell { min-height: calc(100vh - 32px); display: grid; grid-template-columns: 300px minmax(0,1fr); gap: 16px; } .hydra-sidebar, .hydra-main { border: 1px solid #23262d; background: linear-gradient(180deg, rgba(17,18,20,.95), rgba(10,12,15,.96)); box-shadow: 0 18px 48px rgba(0,0,0,.35); } .hydra-sidebar { border-radius: 22px; padding: 18px; display: flex; flex-direction: column; gap: 16px; min-height: 0; } .hydra-main { border-radius: 24px; display: grid; grid-template-rows: auto minmax(0,1fr) auto; min-height: 0; overflow: hidden; }
-        .hydra-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; } .hydra-brand { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; font-weight: 600; } .hydra-muted { color: #8b93a7; font-size: 11px; line-height: 1.7; } .hydra-btn, .hydra-icon, .hydra-thread, .hydra-chip-btn, .hydra-toggle button, .hydra-action { transition: background .16s ease, border-color .16s ease, transform .16s ease; }
-        .hydra-btn, .hydra-icon, .hydra-action { border: 1px solid #31353f; background: #17181c; color: #f8fafc; border-radius: 12px; cursor: pointer; } .hydra-btn { padding: 10px 12px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; } .hydra-icon { width: 34px; height: 34px; color: #8b93a7; } .hydra-btn:hover, .hydra-icon:hover, .hydra-action:hover, .hydra-thread:hover, .hydra-chip-btn:hover, .hydra-toggle button:hover { transform: translateY(-1px); border-color: rgba(96,165,250,.45); }
-        .hydra-thread-list { display: flex; flex-direction: column; gap: 10px; overflow: auto; min-height: 0; } .hydra-thread-item { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; } .hydra-thread { border: 1px solid #2b313b; background: #0d0f12; border-radius: 16px; padding: 14px; text-align: left; cursor: pointer; } .hydra-thread.is-active { border-color: rgba(96,165,250,.45); background: linear-gradient(180deg, rgba(23,29,38,.94), rgba(13,16,21,.96)); } .hydra-thread-title { display: block; color: #f8fafc; font-size: 12px; line-height: 1.55; margin-bottom: 8px; } .hydra-thread-meta { display: flex; flex-wrap: wrap; gap: 8px; color: #8b93a7; font-size: 10px; }
-        .hydra-head, .hydra-compose { padding: 18px 22px; } .hydra-head { border-bottom: 1px solid #23262d; } .hydra-title { margin: 0; font-size: 15px; font-weight: 600; } .hydra-pills { display: flex; flex-wrap: wrap; gap: 8px; } .hydra-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; border: 1px solid #31353f; background: #111214; color: #c5c9d3; font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
-        .hydra-scroll { min-height: 0; overflow: auto; padding: 22px; display: flex; flex-direction: column; gap: 14px; } .hydra-empty { min-height: 100%; display: grid; place-items: center; } .hydra-empty-card { width: min(760px,100%); border: 1px solid #2b313b; border-radius: 24px; padding: 28px; background: linear-gradient(180deg, rgba(19,22,27,.95), rgba(11,13,16,.96)); } .hydra-kicker { color: #60a5fa; font-size: 10px; letter-spacing: .18em; text-transform: uppercase; margin-bottom: 12px; } .hydra-empty h2 { margin: 0; font-size: clamp(24px,4vw,34px); line-height: 1.18; letter-spacing: -.04em; } .hydra-empty-copy { margin: 16px 0 22px; color: #c5c9d3; font-size: 13px; line-height: 1.8; max-width: 58ch; }
-        .hydra-chip-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; } .hydra-chip-btn { border: 1px solid #2b313b; background: #0d0f12; color: #c5c9d3; border-radius: 18px; padding: 14px 16px; text-align: left; cursor: pointer; min-height: 92px; } .hydra-chip-label { display: block; color: #8b93a7; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 10px; }
-        .hydra-message { display: flex; } .hydra-message.user { justify-content: flex-end; } .hydra-card { max-width: min(840px,88%); border-radius: 22px; padding: 14px 16px; border: 1px solid transparent; background: transparent; } .hydra-message.user .hydra-card { background: linear-gradient(180deg, rgba(19,23,30,.96), rgba(15,18,24,.96)); border-color: rgba(96,165,250,.22); } .hydra-message.assistant .hydra-card { background: rgba(12,14,17,.55); border-color: rgba(49,53,63,.52); } .hydra-message.error .hydra-card { background: rgba(68,24,24,.26); border-color: rgba(248,113,113,.38); }
-        .hydra-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: #8b93a7; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .hydra-meta-left, .hydra-meta-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; } .hydra-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: #111214; border: 1px solid #31353f; color: #c5c9d3; font-size: 9px; } .hydra-action { background: transparent; color: #8b93a7; padding: 6px 10px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
-        .hydra-message-content { display: flex; flex-direction: column; gap: 12px; } .hydra-text { margin: 0; white-space: pre-wrap; word-break: break-word; color: #c5c9d3; font-size: 13px; line-height: 1.8; } .hydra-note { margin: 0; font-size: 11px; line-height: 1.7; } .hydra-message.user .hydra-text { color: #f8fafc; } .hydra-code { border-radius: 16px; overflow: hidden; border: 1px solid #31353f; background: #090a0d; } .hydra-code-head { padding: 8px 12px; color: #8b93a7; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; border-bottom: 1px solid #31353f; } .hydra-code pre { margin: 0; padding: 14px; overflow: auto; color: #e2e8f0; font-size: 12px; line-height: 1.65; }
-        .hydra-compose { border-top: 1px solid #23262d; display: flex; flex-direction: column; gap: 14px; background: linear-gradient(180deg, rgba(14,16,20,.84), rgba(10,11,14,.94)); } .hydra-toggle { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid #31353f; border-radius: 999px; background: #0d0f12; } .hydra-toggle button { border: none; background: transparent; color: #c5c9d3; padding: 7px 12px; border-radius: 999px; cursor: pointer; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; } .hydra-toggle button.is-active { background: #f8fafc; color: #09090b; }
-        .hydra-frame { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; align-items: end; border: 1px solid #31353f; border-radius: 22px; background: rgba(10,12,15,.92); padding: 14px; } .hydra-composer { width: 100%; min-height: 44px; max-height: 220px; resize: none; border: none; outline: none; background: transparent; color: #f8fafc; font-size: 13px; line-height: 1.75; } .hydra-composer::placeholder { color: #8b93a7; } .hydra-send { width: 46px; height: 46px; border-radius: 16px; border: 1px solid #31353f; background: #f8fafc; color: #09090b; cursor: pointer; } .hydra-send:disabled, .hydra-btn:disabled, .hydra-icon:disabled { cursor: not-allowed; opacity: .5; transform: none; } .hydra-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: #8b93a7; font-size: 10px; line-height: 1.7; }
-        @media (max-width: 960px) { .hydra-app { padding: 12px; } .hydra-shell { min-height: calc(100vh - 24px); grid-template-columns: 1fr; } .hydra-thread-list { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(220px,1fr); overflow-x: auto; overflow-y: hidden; } .hydra-chip-grid { grid-template-columns: 1fr; } }
-        @media (max-width: 640px) { .hydra-head, .hydra-compose { padding: 16px; } .hydra-scroll { padding: 16px; } .hydra-card { max-width: 100%; } .hydra-frame { grid-template-columns: 1fr; } .hydra-send { width: 100%; } }
+        * { box-sizing: border-box; }
+        body {
+          margin: 0;
+          background: #f3f4f6;
+          color: #111827;
+          font-family: "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        button, textarea { font: inherit; }
+        ::selection { background: rgba(37, 99, 235, 0.18); color: #111827; }
+        .hydra-app {
+          min-height: 100vh;
+          padding: 20px;
+          background: #f3f4f6;
+        }
+        .hydra-shell {
+          min-height: calc(100vh - 40px);
+          display: grid;
+          grid-template-columns: 300px minmax(0, 1fr);
+          border: 1px solid #e5e7eb;
+          border-radius: 24px;
+          background: #ffffff;
+          box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+          overflow: hidden;
+        }
+        .hydra-sidebar {
+          display: flex;
+          flex-direction: column;
+          min-height: 0;
+          padding: 20px;
+          gap: 18px;
+          background: #f8fafc;
+          border-right: 1px solid #e5e7eb;
+        }
+        .hydra-main {
+          display: grid;
+          grid-template-rows: auto minmax(0, 1fr) auto;
+          min-height: 0;
+          background: #fcfcfd;
+        }
+        .hydra-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        .hydra-brand {
+          font-size: 20px;
+          font-weight: 700;
+          line-height: 1.2;
+          color: #111827;
+        }
+        .hydra-muted {
+          color: #6b7280;
+          font-size: 13px;
+          line-height: 1.6;
+        }
+        .hydra-section-title {
+          font-size: 12px;
+          font-weight: 600;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          color: #6b7280;
+        }
+        .hydra-btn,
+        .hydra-thread,
+        .hydra-thread-delete,
+        .hydra-chip-btn,
+        .hydra-toggle button,
+        .hydra-action,
+        .hydra-send {
+          transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+        }
+        .hydra-btn,
+        .hydra-thread-delete,
+        .hydra-action,
+        .hydra-send {
+          border: 1px solid #d1d5db;
+          background: #ffffff;
+          color: #111827;
+          border-radius: 12px;
+          cursor: pointer;
+        }
+        .hydra-btn {
+          padding: 10px 14px;
+          font-size: 14px;
+          font-weight: 600;
+        }
+        .hydra-btn:hover,
+        .hydra-thread-delete:hover,
+        .hydra-action:hover,
+        .hydra-send:hover,
+        .hydra-thread:hover,
+        .hydra-chip-btn:hover,
+        .hydra-toggle button:hover {
+          border-color: #93c5fd;
+          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.08);
+        }
+        .hydra-btn-primary {
+          background: #2563eb;
+          border-color: #2563eb;
+          color: #ffffff;
+        }
+        .hydra-btn-primary:hover {
+          background: #1d4ed8;
+          border-color: #1d4ed8;
+        }
+        .hydra-thread-list {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          overflow: auto;
+          min-height: 0;
+        }
+        .hydra-thread-item {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 8px;
+          align-items: start;
+        }
+        .hydra-thread {
+          border: 1px solid #e5e7eb;
+          background: #ffffff;
+          border-radius: 16px;
+          padding: 14px;
+          text-align: left;
+          cursor: pointer;
+        }
+        .hydra-thread.is-active {
+          border-color: #bfdbfe;
+          background: #eff6ff;
+        }
+        .hydra-thread-title {
+          display: block;
+          color: #111827;
+          font-size: 14px;
+          font-weight: 600;
+          line-height: 1.45;
+          margin-bottom: 6px;
+        }
+        .hydra-thread-snippet {
+          display: block;
+          color: #6b7280;
+          font-size: 12px;
+          line-height: 1.55;
+          margin-bottom: 8px;
+        }
+        .hydra-thread-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          color: #6b7280;
+          font-size: 11px;
+        }
+        .hydra-thread-delete {
+          padding: 10px 12px;
+          font-size: 12px;
+          color: #6b7280;
+        }
+        .hydra-head,
+        .hydra-compose {
+          padding: 20px 24px;
+          background: #ffffff;
+        }
+        .hydra-head {
+          border-bottom: 1px solid #e5e7eb;
+        }
+        .hydra-title {
+          margin: 0;
+          font-size: 22px;
+          line-height: 1.25;
+          font-weight: 700;
+          color: #111827;
+        }
+        .hydra-subtitle {
+          margin: 6px 0 0;
+          color: #6b7280;
+          font-size: 14px;
+          line-height: 1.6;
+        }
+        .hydra-pills {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .hydra-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid #e5e7eb;
+          background: #f9fafb;
+          color: #4b5563;
+          font-size: 12px;
+          line-height: 1.2;
+        }
+        .hydra-scroll {
+          min-height: 0;
+          overflow: auto;
+          padding: 24px;
+        }
+        .hydra-conversation {
+          width: min(820px, 100%);
+          margin: 0 auto;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .hydra-empty {
+          min-height: 100%;
+          display: grid;
+          place-items: center;
+        }
+        .hydra-empty-card {
+          width: min(720px, 100%);
+          border: 1px solid #e5e7eb;
+          border-radius: 20px;
+          padding: 28px;
+          background: #ffffff;
+          box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+        }
+        .hydra-kicker {
+          color: #2563eb;
+          font-size: 12px;
+          font-weight: 600;
+          line-height: 1.4;
+          margin-bottom: 10px;
+        }
+        .hydra-empty h2 {
+          margin: 0;
+          font-size: clamp(28px, 4vw, 36px);
+          line-height: 1.2;
+          letter-spacing: -0.03em;
+          color: #111827;
+        }
+        .hydra-empty-copy {
+          margin: 14px 0 22px;
+          color: #6b7280;
+          font-size: 15px;
+          line-height: 1.7;
+          max-width: 58ch;
+        }
+        .hydra-chip-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+        }
+        .hydra-chip-btn {
+          border: 1px solid #e5e7eb;
+          background: #ffffff;
+          color: #111827;
+          border-radius: 16px;
+          padding: 14px 16px;
+          text-align: left;
+          cursor: pointer;
+          min-height: 88px;
+        }
+        .hydra-chip-label {
+          display: block;
+          color: #6b7280;
+          font-size: 11px;
+          font-weight: 600;
+          margin-bottom: 10px;
+        }
+        .hydra-message {
+          display: flex;
+        }
+        .hydra-message.user {
+          justify-content: flex-end;
+        }
+        .hydra-card {
+          width: min(100%, 720px);
+          border-radius: 20px;
+          padding: 16px 18px;
+          border: 1px solid #e5e7eb;
+          background: #ffffff;
+          box-shadow: 0 6px 20px rgba(15, 23, 42, 0.04);
+        }
+        .hydra-message.user .hydra-card {
+          background: #eff6ff;
+          border-color: #bfdbfe;
+        }
+        .hydra-message.error .hydra-card {
+          background: #fff1f2;
+          border-color: #fecdd3;
+        }
+        .hydra-meta {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 10px;
+          color: #6b7280;
+          font-size: 12px;
+          line-height: 1.5;
+        }
+        .hydra-meta-left,
+        .hydra-meta-right {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .hydra-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          background: #f9fafb;
+          border: 1px solid #e5e7eb;
+          color: #4b5563;
+          font-size: 11px;
+          line-height: 1.2;
+        }
+        .hydra-action {
+          background: #ffffff;
+          color: #4b5563;
+          padding: 7px 10px;
+          font-size: 12px;
+        }
+        .hydra-message-content {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .hydra-text {
+          margin: 0;
+          white-space: pre-wrap;
+          word-break: break-word;
+          color: #111827;
+          font-size: 15px;
+          line-height: 1.75;
+        }
+        .hydra-note {
+          margin: 12px 0 0;
+          font-size: 13px;
+          line-height: 1.6;
+        }
+        .hydra-code {
+          border-radius: 16px;
+          overflow: hidden;
+          border: 1px solid #e5e7eb;
+          background: #f8fafc;
+        }
+        .hydra-code-head {
+          padding: 8px 12px;
+          color: #6b7280;
+          font-size: 11px;
+          font-weight: 600;
+          border-bottom: 1px solid #e5e7eb;
+          background: #ffffff;
+        }
+        .hydra-code pre {
+          margin: 0;
+          padding: 14px;
+          overflow: auto;
+          color: #111827;
+          font-size: 13px;
+          line-height: 1.65;
+        }
+        .hydra-compose {
+          border-top: 1px solid #e5e7eb;
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+        }
+        .hydra-toggle {
+          display: inline-flex;
+          gap: 4px;
+          padding: 4px;
+          border: 1px solid #e5e7eb;
+          border-radius: 999px;
+          background: #f9fafb;
+        }
+        .hydra-toggle button {
+          border: none;
+          background: transparent;
+          color: #6b7280;
+          padding: 8px 12px;
+          border-radius: 999px;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 600;
+        }
+        .hydra-toggle button.is-active {
+          background: #ffffff;
+          color: #111827;
+          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+        }
+        .hydra-frame {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 12px;
+          align-items: end;
+          border: 1px solid #d1d5db;
+          border-radius: 18px;
+          background: #ffffff;
+          padding: 14px;
+        }
+        .hydra-composer {
+          width: 100%;
+          min-height: 48px;
+          max-height: 220px;
+          resize: none;
+          border: none;
+          outline: none;
+          background: transparent;
+          color: #111827;
+          font-size: 15px;
+          line-height: 1.7;
+        }
+        .hydra-composer::placeholder {
+          color: #9ca3af;
+        }
+        .hydra-send {
+          min-width: 88px;
+          height: 48px;
+          border-radius: 14px;
+          border: 1px solid #2563eb;
+          background: #2563eb;
+          color: #ffffff;
+          font-weight: 600;
+        }
+        .hydra-send:disabled,
+        .hydra-btn:disabled,
+        .hydra-thread-delete:disabled {
+          cursor: not-allowed;
+          opacity: 0.55;
+          box-shadow: none;
+        }
+        .hydra-footer {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+          color: #6b7280;
+          font-size: 12px;
+          line-height: 1.6;
+        }
+        @media (max-width: 1080px) {
+          .hydra-shell { grid-template-columns: 260px minmax(0, 1fr); }
+        }
+        @media (max-width: 960px) {
+          .hydra-app { padding: 12px; }
+          .hydra-shell { min-height: calc(100vh - 24px); grid-template-columns: 1fr; }
+          .hydra-sidebar { border-right: none; border-bottom: 1px solid #e5e7eb; }
+          .hydra-thread-list {
+            display: grid;
+            grid-auto-flow: column;
+            grid-auto-columns: minmax(240px, 1fr);
+            overflow-x: auto;
+            overflow-y: hidden;
+          }
+          .hydra-chip-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 640px) {
+          .hydra-head, .hydra-compose, .hydra-sidebar, .hydra-scroll { padding: 16px; }
+          .hydra-row { align-items: flex-start; flex-direction: column; }
+          .hydra-thread-item { grid-template-columns: 1fr; }
+          .hydra-frame { grid-template-columns: 1fr; }
+          .hydra-send { width: 100%; }
+          .hydra-card { width: 100%; }
+        }
       `}</style>
 
       <div className="hydra-shell">
@@ -595,16 +1056,18 @@ export default function HydraChatApp() {
           <div className="hydra-row">
             <div>
               <div className="hydra-brand">Hydra</div>
-              <div className="hydra-muted">multi-model chat workspace</div>
+              <div className="hydra-muted">AI chat workspace</div>
             </div>
             <button className="hydra-btn" type="button" onClick={() => createNewThread()}>
               New chat
             </button>
           </div>
 
+          <div className="hydra-section-title">Chats</div>
+
           <div className="hydra-muted">
-            Conversations now persist locally in this browser, so Hydra behaves more like an actual
-            chat app and less like a single test pane.
+            Conversations are stored locally in this browser. Longer answers can refine
+            automatically after the first draft arrives.
           </div>
 
           <div className="hydra-thread-list" aria-label="Conversations">
@@ -616,21 +1079,22 @@ export default function HydraChatApp() {
                   onClick={() => selectThread(thread.id)}
                 >
                   <span className="hydra-thread-title">{thread.title}</span>
+                  <span className="hydra-thread-snippet">{getThreadPreview(thread)}</span>
                   <div className="hydra-thread-meta">
-                    <span>{thread.messages.length} msgs</span>
+                    <span>{thread.messages.length} messages</span>
                     <span>{thread.rigor}</span>
                     <span>{formatThreadTime(thread.updatedAt)}</span>
                     {thread.id === sendingThreadId && <span>sending</span>}
                   </div>
                 </button>
                 <button
-                  className="hydra-icon"
+                  className="hydra-thread-delete"
                   type="button"
                   aria-label={`Delete ${thread.title}`}
                   disabled={thread.id === sendingThreadId}
                   onClick={() => deleteThread(thread.id)}
                 >
-                  x
+                  Delete
                 </button>
               </div>
             ))}
@@ -642,16 +1106,16 @@ export default function HydraChatApp() {
             <div className="hydra-row">
               <div>
                 <h1 className="hydra-title">{activeThread?.title ?? "Hydra"}</h1>
-                <div className="hydra-muted">
+                <p className="hydra-subtitle">
                   {activeThread
                     ? `${activeThread.messages.length} messages in this thread. ${RIGOR_COPY[activeThread.rigor]}`
                     : "Loading your workspace..."}
-                </div>
+                </p>
               </div>
               {activeThread && (
                 <div className="hydra-pills">
-                  <span className="hydra-pill">thread {activeThread.id.slice(0, 8)}</span>
                   <span className="hydra-pill">updated {formatThreadTime(activeThread.updatedAt)}</span>
+                  <span className="hydra-pill">{activeThread.rigor}</span>
                 </div>
               )}
             </div>
@@ -668,11 +1132,11 @@ export default function HydraChatApp() {
             ) : activeThread.messages.length === 0 ? (
               <div className="hydra-empty">
                 <div className="hydra-empty-card">
-                  <div className="hydra-kicker">Conversation Ready</div>
-                  <h2>This is the start of a real chat app, not a test interface.</h2>
+                  <div className="hydra-kicker">New conversation</div>
+                  <h2>Start a chat with Hydra.</h2>
                   <p className="hydra-empty-copy">
-                    Threads persist locally, rigor belongs to each conversation, and the layout is
-                    built for longer sessions. Pick a prompt below or start typing.
+                    Ask a question, paste a problem, or choose one of the starter prompts below to
+                    begin.
                   </p>
                   <div className="hydra-chip-grid">
                     {STARTER_PROMPTS.map((prompt, index) => (
@@ -685,7 +1149,7 @@ export default function HydraChatApp() {
                 </div>
               </div>
             ) : (
-              <>
+              <div className="hydra-conversation">
                 {activeThread.messages.map((message) => (
                   <article className={`hydra-message ${message.role}${message.error ? " error" : ""}`} key={message.id}>
                     <div className="hydra-card">
@@ -735,11 +1199,13 @@ export default function HydraChatApp() {
                           <span className="hydra-badge">{activeThread.rigor}</span>
                         </div>
                       </div>
-                      <p className="hydra-text">Building a first-pass reply before the follow-up refinement step.</p>
+                      <p className="hydra-text">
+                        Building a first-pass reply before any follow-up refinement step.
+                      </p>
                     </div>
                   </article>
                 )}
-              </>
+              </div>
             )}
             <div ref={endRef} />
           </main>
@@ -775,8 +1241,12 @@ export default function HydraChatApp() {
             </div>
 
             <div className="hydra-footer">
-              <span>Enter sends. Shift+Enter adds a new line. Conversations are stored locally in this browser for now.</span>
-              <span>{sendingThreadId ? "Hydra is drafting..." : "Ready"}</span>
+              <span>Enter sends. Shift+Enter adds a new line.</span>
+              <span>
+                {sendingThreadId
+                  ? "Hydra is drafting..."
+                  : "Follow-up refinement runs automatically when needed."}
+              </span>
             </div>
           </footer>
         </section>
