@@ -1,110 +1,115 @@
 import { call } from "./openrouter";
 import { MODELS } from "./models";
-import type { ChatMessage, Rigor } from "./types";
-import { verifyAnswer } from "./verify";
+import { reviewAndRevise, type ReviewSpec } from "./verify";
+import type { ChatMessage, EngineResponse, Rigor } from "./types";
 
-const SYNTH = `You are producing a final answer from multiple expert analyses. Rules:
-- Do NOT mention multiple experts, analyses, or sources. Write as one authoritative voice.
-- Lead with the answer. No preamble. No "Great question!"
-- Match tone and length to the question - casual gets casual, technical gets technical.
-- Where experts disagreed, go with the strongest reasoning.
-- If genuinely uncertain, say so honestly.
-- Be precise. No filler. No padding.`;
+const THINK_DRAFT_FALLBACK =
+  "Hydra could not finish the deeper analysis within the serverless time budget. Please retry if you want another pass.";
 
-export async function think(
+const THINK_REVISION_INSTRUCTIONS = `Revise the answer so it is direct, grounded, and concise.
+- Lead with the answer.
+- Preserve the strongest tradeoffs and constraints.
+- Keep the answer readable without sounding robotic.`;
+
+function buildDraftPrompt(query: string, rigorous: boolean) {
+  return rigorous
+    ? `Answer this quickly but systematically. Cover the main constraints, the best option, and the biggest tradeoff in one concise response.\n\n${query}`
+    : `Give a strong first-pass answer. Keep it concise, but include the key tradeoff or caveat.\n\n${query}`;
+}
+
+function buildReviewSpecs(rigor: Rigor): ReviewSpec[] {
+  const specs: ReviewSpec[] = [
+    {
+      label: "Critical Review",
+      modelId: MODELS.critic.id,
+      prompt: `Review the draft answer.
+- Find the few highest-value issues.
+- Focus on weak assumptions, shallow tradeoffs, or mistakes.
+- Keep the notes concise and actionable.`,
+    },
+  ];
+
+  if (rigor === "rigorous") {
+    specs.push({
+      label: "Coverage Review",
+      modelId: MODELS.broad.id,
+      prompt: `Audit the draft answer for missing constraints or incomplete tradeoff analysis.
+- Do not rewrite the answer.
+- Return only concise notes on what should change.`,
+    });
+  }
+
+  return specs;
+}
+
+export async function draftThink(
   messages: ChatMessage[],
   rigor: Rigor = "balanced"
-): Promise<string> {
-  const query = messages[messages.length - 1].content;
-  const ctx = messages.slice(0, -1);
-  const rigorous = rigor === "rigorous";
-
-  const [a, b, c] = await Promise.allSettled([
-    call(
-      MODELS.broad.id,
-      [
-        ...ctx,
-        {
-          role: "user",
-          content: rigorous
-            ? `Work systematically. State the key constraints, compare the most viable approaches, call out the main tradeoffs, then give your recommendation.\n\n${query}`
-            : `Think step-by-step.\n\n${query}`,
-        },
-      ],
-      { maxTokens: 3000, temperature: rigorous ? 0.35 : 0.5 }
-    ),
-    call(
-      MODELS.analyst.id,
-      [
-        ...ctx,
-        {
-          role: "user",
-          content: rigorous
-            ? `Analyze this methodically. Surface assumptions, evaluate tradeoffs, identify likely failure modes, then give the strongest answer.\n\n${query}`
-            : `Consider multiple approaches, evaluate tradeoffs, then give your best answer.\n\n${query}`,
-        },
-      ],
-      { maxTokens: 3000, temperature: rigorous ? 0.4 : 0.6 }
-    ),
-    call(
-      MODELS.critic.id,
-      [
-        ...ctx,
-        {
-          role: "user",
-          content: rigorous
-            ? `Be adversarial but constructive. Challenge the obvious answer, surface the strongest objections, then give the most defensible answer.\n\n${query}`
-            : `First identify the most obvious answer. Then find flaws in it. Then give the most defensible answer.\n\n${query}`,
-        },
-      ],
-      { maxTokens: 3000, temperature: rigorous ? 0.3 : 0.5 }
-    ),
-  ]);
-
-  const proposals = [a, b, c]
-    .filter(
-      (result): result is PromiseFulfilledResult<string> =>
-        result.status === "fulfilled" && result.value.length > 0
-    )
-    .map((result) => result.value);
-
-  let draft: string;
-
-  if (proposals.length === 0) {
-    draft = await call(MODELS.broad.id, messages, {
-      maxTokens: 3000,
-      temperature: rigorous ? 0.35 : 0.5,
-    });
-  } else if (proposals.length === 1) {
-    draft = proposals[0];
-  } else {
-    const combined = proposals
-      .map((proposal, index) => `--- Analysis ${index + 1} ---\n${proposal}`)
-      .join("\n\n");
-
-    draft = await call(
-      MODELS.reasoner.id,
-      [
-        { role: "system", content: SYNTH },
-        {
-          role: "user",
-          content: `Question: ${query}\n\n${combined}\n\nSynthesize the best answer.`,
-        },
-      ],
-      { maxTokens: 3000, temperature: 0.3 }
-    );
+): Promise<EngineResponse> {
+  const query = messages[messages.length - 1]?.content ?? "";
+  if (!query.trim()) {
+    return {
+      content: THINK_DRAFT_FALLBACK,
+      status: "fallback",
+      needsFollowup: false,
+    };
   }
 
-  if (!rigorous) {
-    return draft;
+  const draft = await call(
+    MODELS.broad.id,
+    [
+      ...messages.slice(0, -1),
+      { role: "user", content: buildDraftPrompt(query, rigor === "rigorous") },
+    ],
+    {
+      maxTokens: 1800,
+      temperature: rigor === "rigorous" ? 0.3 : 0.45,
+      timeoutMs: 18000,
+    }
+  );
+
+  if (!draft.trim()) {
+    return {
+      content: THINK_DRAFT_FALLBACK,
+      status: "fallback",
+      needsFollowup: false,
+    };
   }
 
-  const verified = await verifyAnswer({
+  return {
+    content: draft,
+    status: "draft",
+    needsFollowup: true,
+  };
+}
+
+export async function refineThink(args: {
+  messages: ChatMessage[];
+  draft: string;
+  rigor: Rigor;
+}): Promise<EngineResponse> {
+  const { messages, draft, rigor } = args;
+  const query = messages[messages.length - 1]?.content ?? "";
+  const seed = draft.trim() || THINK_DRAFT_FALLBACK;
+
+  if (!query.trim()) {
+    return {
+      content: seed,
+      status: "fallback",
+      needsFollowup: false,
+    };
+  }
+
+  const revised = await reviewAndRevise({
     query,
-    draft,
-    topology: "think",
-    rigor,
+    draft: seed,
+    reviewSpecs: buildReviewSpecs(rigor),
+    revisionInstructions: THINK_REVISION_INSTRUCTIONS,
   });
 
-  return verified.content;
+  return {
+    content: revised.content,
+    status: revised.revised ? "final" : "fallback",
+    needsFollowup: false,
+  };
 }

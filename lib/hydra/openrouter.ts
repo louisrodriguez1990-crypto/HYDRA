@@ -19,7 +19,13 @@ function getClient(): OpenAI {
 export async function call(
   modelId: string,
   messages: { role: string; content: string }[],
-  opts: { maxTokens?: number; temperature?: number } = {}
+  opts: {
+    maxTokens?: number;
+    temperature?: number;
+    timeoutMs?: number;
+    maxRetries?: number;
+    signal?: AbortSignal;
+  } = {}
 ): Promise<string> {
   const client = getClient();
   try {
@@ -29,6 +35,10 @@ export async function call(
       max_tokens: opts.maxTokens ?? 4096,
       temperature: opts.temperature ?? 0.7,
       stream: false,
+    }, {
+      maxRetries: opts.maxRetries ?? 0,
+      timeout: opts.timeoutMs,
+      signal: opts.signal,
     });
     return res.choices[0]?.message?.content ?? "";
   } catch (err) {

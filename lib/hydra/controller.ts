@@ -37,7 +37,7 @@ export async function classify(msg: string, rigor: Rigor = "balanced"): Promise<
       { role: "system", content: CLASSIFY_PROMPT },
       { role: "user", content: `Rigor: ${rigor}\n\nQuery:\n${msg}` },
     ],
-    { maxTokens: 60, temperature: 0.1 }
+    { maxTokens: 60, temperature: 0.1, timeoutMs: 2500 }
   );
 
   return parseJSON<Plan>(res, {

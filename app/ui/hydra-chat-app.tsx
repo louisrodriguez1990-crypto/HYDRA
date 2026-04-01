@@ -11,6 +11,7 @@ import {
 type Topology = "fast" | "think" | "discover";
 type Rigor = "balanced" | "rigorous";
 type Role = "user" | "assistant";
+type MessageStatus = "draft" | "refining" | "final" | "fallback";
 
 interface ChatMessage {
   id: string;
@@ -21,6 +22,8 @@ interface ChatMessage {
   rigor?: Rigor;
   latency?: number;
   error?: boolean;
+  status?: MessageStatus;
+  responseToId?: string;
 }
 
 interface ChatThread {
@@ -49,6 +52,16 @@ const RIGOR_COPY: Record<Rigor, string> = {
   balanced: "Balanced keeps Hydra fast and flexible.",
   rigorous: "Rigorous adds a verification pass and tighter synthesis.",
 };
+const STATUS_COLOR: Record<Exclude<MessageStatus, "final">, string> = {
+  draft: "#38bdf8",
+  refining: "#f59e0b",
+  fallback: "#f87171",
+};
+const STATUS_COPY: Record<Exclude<MessageStatus, "final">, string> = {
+  draft: "First-pass answer ready.",
+  refining: "Hydra is refining this answer in the background.",
+  fallback: "Showing the best available answer before the request budget expired.",
+};
 const STARTER_PROMPTS = [
   "Compare three architectures and recommend the strongest option.",
   "Design a novel workflow, then pressure-test it for weak spots.",
@@ -64,6 +77,12 @@ function deriveTitle(input: string) {
   const collapsed = input.replace(/\s+/g, " ").trim();
   if (!collapsed) return "New chat";
   return collapsed.length > 48 ? `${collapsed.slice(0, 48).trimEnd()}...` : collapsed;
+}
+
+function isMessageStatus(value: unknown): value is MessageStatus {
+  return (
+    value === "draft" || value === "refining" || value === "final" || value === "fallback"
+  );
 }
 
 function createThread(seed?: Partial<Pick<ChatThread, "draft" | "rigor">>): ChatThread {
@@ -117,6 +136,13 @@ function loadThreads() {
                 : undefined,
             latency: typeof message.latency === "number" ? message.latency : undefined,
             error: message.error === true,
+            status: isMessageStatus(message.status)
+              ? message.status
+              : message.role === "assistant"
+                ? "final"
+                : undefined,
+            responseToId:
+              typeof message.responseToId === "string" ? message.responseToId : undefined,
           }))
         : [],
     })) as ChatThread[];
@@ -161,6 +187,23 @@ function splitBlocks(text: string): MessageBlock[] {
 
 function persistThreadsToStorage(threads: ChatThread[]) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(threads));
+}
+
+function serializeMessages(messages: ChatMessage[]) {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.text,
+  }));
+}
+
+function getLastUserMessageId(messages: ChatMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "user") {
+      return messages[index].id;
+    }
+  }
+
+  return null;
 }
 
 function syncThreadUrl(threadId: string | null, mode: "push" | "replace") {
@@ -299,6 +342,101 @@ export default function HydraChatApp() {
     } catch {}
   };
 
+  const startFollowup = async (args: {
+    threadId: string;
+    assistantMessageId: string;
+    responseToId: string;
+    topology: Topology;
+    rigor: Rigor;
+    draft: string;
+    messages: ChatMessage[];
+  }) => {
+    const { threadId, assistantMessageId, responseToId, topology, rigor, draft, messages } = args;
+    const refiningAt = new Date().toISOString();
+
+    setThreads((current) =>
+      current.map((thread) =>
+        thread.id === threadId
+          ? {
+              ...thread,
+              updatedAt: refiningAt,
+              messages: thread.messages.map((message) =>
+                message.id === assistantMessageId ? { ...message, status: "refining" } : message
+              ),
+            }
+          : thread
+      )
+    );
+
+    try {
+      const res = await fetch("/api/chat/followup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: serializeMessages(messages),
+          draft,
+          topology,
+          rigor,
+        }),
+      });
+      const data = await res.json();
+      const finishedAt = new Date().toISOString();
+
+      setThreads((current) =>
+        current.map((thread) => {
+          if (thread.id !== threadId) return thread;
+          if (getLastUserMessageId(thread.messages) !== responseToId) return thread;
+          if (!thread.messages.some((message) => message.id === assistantMessageId)) return thread;
+
+          const nextText =
+            typeof data.content === "string" && data.content.trim() ? data.content : draft;
+          const nextStatus: MessageStatus =
+            res.ok && data.metadata?.status !== "fallback" ? "final" : "fallback";
+
+          return {
+            ...thread,
+            updatedAt: finishedAt,
+            messages: thread.messages.map((message) =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    text: nextText,
+                    topology,
+                    rigor,
+                    latency:
+                      typeof data.metadata?.latencyMs === "number"
+                        ? data.metadata.latencyMs
+                        : message.latency,
+                    status: nextStatus,
+                    error: !res.ok,
+                  }
+                : message
+            ),
+          };
+        })
+      );
+    } catch {
+      const failedAt = new Date().toISOString();
+      setThreads((current) =>
+        current.map((thread) => {
+          if (thread.id !== threadId) return thread;
+          if (getLastUserMessageId(thread.messages) !== responseToId) return thread;
+          if (!thread.messages.some((message) => message.id === assistantMessageId)) return thread;
+
+          return {
+            ...thread,
+            updatedAt: failedAt,
+            messages: thread.messages.map((message) =>
+              message.id === assistantMessageId
+                ? { ...message, status: "fallback", error: true }
+                : message
+            ),
+          };
+        })
+      );
+    }
+  };
+
   const send = async () => {
     if (!activeThread || sendingThreadId) return;
     const text = activeThread.draft.trim();
@@ -333,34 +471,38 @@ export default function HydraChatApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: outgoingMessages.map((message) => ({
-            role: message.role,
-            content: message.text,
-          })),
+          messages: serializeMessages(outgoingMessages),
           rigor,
         }),
       });
       const data = await res.json();
       const finishedAt = new Date().toISOString();
-
-      const assistantMessage: ChatMessage = res.ok
-        ? {
-            id: createId(),
-            role: "assistant",
-            text: typeof data.content === "string" ? data.content : "",
-            createdAt: finishedAt,
-            topology: data.metadata?.topology as Topology | undefined,
-            rigor: data.metadata?.rigor as Rigor | undefined,
-            latency: data.metadata?.latencyMs as number | undefined,
-          }
-        : {
-            id: createId(),
-            role: "assistant",
-            text: data.error ?? "Something went wrong. Please try again.",
-            createdAt: finishedAt,
-            rigor,
-            error: true,
-          };
+      const topology = data.metadata?.topology as Topology | undefined;
+      const nextRigor = (data.metadata?.rigor as Rigor | undefined) ?? rigor;
+      const apiStatus = data.metadata?.status;
+      const assistantStatus: MessageStatus = res.ok
+        ? apiStatus === "draft"
+          ? "draft"
+          : apiStatus === "fallback"
+            ? "fallback"
+            : "final"
+        : "fallback";
+      const assistantMessageId = createId();
+      const assistantMessage: ChatMessage = {
+        id: assistantMessageId,
+        role: "assistant",
+        text:
+          typeof data.content === "string" && data.content.trim()
+            ? data.content
+            : data.error ?? "Something went wrong. Please try again.",
+        createdAt: finishedAt,
+        topology,
+        rigor: nextRigor,
+        latency: data.metadata?.latencyMs as number | undefined,
+        status: assistantStatus,
+        responseToId: userMessage.id,
+        error: !res.ok,
+      };
 
       setThreads((current) =>
         current.map((thread) =>
@@ -373,6 +515,24 @@ export default function HydraChatApp() {
             : thread
         )
       );
+
+      if (
+        res.ok &&
+        assistantStatus === "draft" &&
+        data.metadata?.needsFollowup === true &&
+        topology &&
+        topology !== "fast"
+      ) {
+        void startFollowup({
+          threadId,
+          assistantMessageId,
+          responseToId: userMessage.id,
+          topology,
+          rigor: nextRigor,
+          draft: assistantMessage.text,
+          messages: outgoingMessages,
+        });
+      }
     } catch {
       const failedAt = new Date().toISOString();
       setThreads((current) =>
@@ -389,6 +549,7 @@ export default function HydraChatApp() {
                     text: "Connection error. Please check your network and try again.",
                     createdAt: failedAt,
                     rigor,
+                    status: "fallback",
                     error: true,
                   },
                 ],
@@ -422,7 +583,7 @@ export default function HydraChatApp() {
         .hydra-chip-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; } .hydra-chip-btn { border: 1px solid #2b313b; background: #0d0f12; color: #c5c9d3; border-radius: 18px; padding: 14px 16px; text-align: left; cursor: pointer; min-height: 92px; } .hydra-chip-label { display: block; color: #8b93a7; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 10px; }
         .hydra-message { display: flex; } .hydra-message.user { justify-content: flex-end; } .hydra-card { max-width: min(840px,88%); border-radius: 22px; padding: 14px 16px; border: 1px solid transparent; background: transparent; } .hydra-message.user .hydra-card { background: linear-gradient(180deg, rgba(19,23,30,.96), rgba(15,18,24,.96)); border-color: rgba(96,165,250,.22); } .hydra-message.assistant .hydra-card { background: rgba(12,14,17,.55); border-color: rgba(49,53,63,.52); } .hydra-message.error .hydra-card { background: rgba(68,24,24,.26); border-color: rgba(248,113,113,.38); }
         .hydra-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: #8b93a7; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .hydra-meta-left, .hydra-meta-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; } .hydra-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: #111214; border: 1px solid #31353f; color: #c5c9d3; font-size: 9px; } .hydra-action { background: transparent; color: #8b93a7; padding: 6px 10px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
-        .hydra-message-content { display: flex; flex-direction: column; gap: 12px; } .hydra-text { margin: 0; white-space: pre-wrap; word-break: break-word; color: #c5c9d3; font-size: 13px; line-height: 1.8; } .hydra-message.user .hydra-text { color: #f8fafc; } .hydra-code { border-radius: 16px; overflow: hidden; border: 1px solid #31353f; background: #090a0d; } .hydra-code-head { padding: 8px 12px; color: #8b93a7; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; border-bottom: 1px solid #31353f; } .hydra-code pre { margin: 0; padding: 14px; overflow: auto; color: #e2e8f0; font-size: 12px; line-height: 1.65; }
+        .hydra-message-content { display: flex; flex-direction: column; gap: 12px; } .hydra-text { margin: 0; white-space: pre-wrap; word-break: break-word; color: #c5c9d3; font-size: 13px; line-height: 1.8; } .hydra-note { margin: 0; font-size: 11px; line-height: 1.7; } .hydra-message.user .hydra-text { color: #f8fafc; } .hydra-code { border-radius: 16px; overflow: hidden; border: 1px solid #31353f; background: #090a0d; } .hydra-code-head { padding: 8px 12px; color: #8b93a7; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; border-bottom: 1px solid #31353f; } .hydra-code pre { margin: 0; padding: 14px; overflow: auto; color: #e2e8f0; font-size: 12px; line-height: 1.65; }
         .hydra-compose { border-top: 1px solid #23262d; display: flex; flex-direction: column; gap: 14px; background: linear-gradient(180deg, rgba(14,16,20,.84), rgba(10,11,14,.94)); } .hydra-toggle { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid #31353f; border-radius: 999px; background: #0d0f12; } .hydra-toggle button { border: none; background: transparent; color: #c5c9d3; padding: 7px 12px; border-radius: 999px; cursor: pointer; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; } .hydra-toggle button.is-active { background: #f8fafc; color: #09090b; }
         .hydra-frame { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; align-items: end; border: 1px solid #31353f; border-radius: 22px; background: rgba(10,12,15,.92); padding: 14px; } .hydra-composer { width: 100%; min-height: 44px; max-height: 220px; resize: none; border: none; outline: none; background: transparent; color: #f8fafc; font-size: 13px; line-height: 1.75; } .hydra-composer::placeholder { color: #8b93a7; } .hydra-send { width: 46px; height: 46px; border-radius: 16px; border: 1px solid #31353f; background: #f8fafc; color: #09090b; cursor: pointer; } .hydra-send:disabled, .hydra-btn:disabled, .hydra-icon:disabled { cursor: not-allowed; opacity: .5; transform: none; } .hydra-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: #8b93a7; font-size: 10px; line-height: 1.7; }
         @media (max-width: 960px) { .hydra-app { padding: 12px; } .hydra-shell { min-height: calc(100vh - 24px); grid-template-columns: 1fr; } .hydra-thread-list { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(220px,1fr); overflow-x: auto; overflow-y: hidden; } .hydra-chip-grid { grid-template-columns: 1fr; } }
@@ -539,6 +700,11 @@ export default function HydraChatApp() {
                           )}
                           {message.rigor && <span className="hydra-badge">{message.rigor}</span>}
                           {message.latency != null && <span className="hydra-badge">{(message.latency / 1000).toFixed(1)}s</span>}
+                          {message.role === "assistant" && message.status && message.status !== "final" && (
+                            <span className="hydra-badge" style={{ color: STATUS_COLOR[message.status], borderColor: `${STATUS_COLOR[message.status]}55` }}>
+                              {message.status}
+                            </span>
+                          )}
                           {message.error && <span className="hydra-badge" style={{ color: "#f87171", borderColor: "rgba(248,113,113,.4)" }}>error</span>}
                         </div>
                         {message.role === "assistant" && (
@@ -550,6 +716,11 @@ export default function HydraChatApp() {
                         )}
                       </div>
                       <MessageContent text={message.text} />
+                      {message.role === "assistant" && message.status && message.status !== "final" && (
+                        <p className="hydra-note" style={{ color: STATUS_COLOR[message.status] }}>
+                          {STATUS_COPY[message.status]}
+                        </p>
+                      )}
                     </div>
                   </article>
                 ))}
@@ -560,11 +731,11 @@ export default function HydraChatApp() {
                       <div className="hydra-meta">
                         <div className="hydra-meta-left">
                           <span>Hydra</span>
-                          <span>working</span>
+                          <span>drafting</span>
                           <span className="hydra-badge">{activeThread.rigor}</span>
                         </div>
                       </div>
-                      <p className="hydra-text">Building the next reply with the current thread context.</p>
+                      <p className="hydra-text">Building a first-pass reply before the follow-up refinement step.</p>
                     </div>
                   </article>
                 )}
@@ -605,7 +776,7 @@ export default function HydraChatApp() {
 
             <div className="hydra-footer">
               <span>Enter sends. Shift+Enter adds a new line. Conversations are stored locally in this browser for now.</span>
-              <span>{sendingThreadId ? "Hydra is responding..." : "Ready"}</span>
+              <span>{sendingThreadId ? "Hydra is drafting..." : "Ready"}</span>
             </div>
           </footer>
         </section>

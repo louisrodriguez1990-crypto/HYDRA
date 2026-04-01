@@ -1,23 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { classify, normalizeRigor } from "@/lib/hydra/controller";
 import { fast } from "@/lib/hydra/engine-fast";
-import { think } from "@/lib/hydra/engine-think";
-import { discover } from "@/lib/hydra/engine-discover";
-import type { ChatMessage } from "@/lib/hydra/types";
+import { draftThink } from "@/lib/hydra/engine-think";
+import { draftDiscover } from "@/lib/hydra/engine-discover";
+import { isChatMessage } from "@/lib/hydra/types";
 
-export const maxDuration = 60;
+export const maxDuration = 55;
 export const runtime = "nodejs";
-
-function isChatMessage(value: unknown): value is ChatMessage {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "role" in value &&
-    "content" in value &&
-    typeof value.role === "string" &&
-    typeof value.content === "string"
-  );
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,32 +24,23 @@ export async function POST(req: NextRequest) {
     const plan = await classify(last, rigor);
     const start = Date.now();
 
-    console.log(
-      `[Hydra] ${plan.topology} | rigor: ${rigor} | complexity: ${plan.complexity}`
-    );
+    console.log(`[Hydra] initial ${plan.topology} | rigor: ${rigor}`);
 
-    let content: string;
-    switch (plan.topology) {
-      case "fast":
-        content = await fast(messages, rigor);
-        break;
-      case "think":
-        content = await think(messages, rigor);
-        break;
-      case "discover":
-        content = await discover(messages, rigor);
-        break;
-      default:
-        content = await think(messages, rigor);
-    }
+    const result =
+      plan.topology === "fast"
+        ? await fast(messages, rigor)
+        : plan.topology === "discover"
+          ? await draftDiscover(messages, rigor)
+          : await draftThink(messages, rigor);
 
     return NextResponse.json({
-      content,
+      content: result.content,
       metadata: {
         topology: plan.topology,
-        complexity: plan.complexity,
         rigor,
         latencyMs: Date.now() - start,
+        status: result.status,
+        needsFollowup: result.needsFollowup,
       },
     });
   } catch (error) {
