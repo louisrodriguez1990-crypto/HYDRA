@@ -32,6 +32,29 @@ export interface CompoundTrace {
   nodes: CompoundTraceNode[];
 }
 
+export interface CollisionTraceFrame {
+  id: string;
+  title: string;
+  premise: string;
+  answer: string;
+  status: TraceNodeStatus;
+}
+
+export interface CollisionMapTrace {
+  tensions: string[];
+  agreements: string[];
+  gaps: string[];
+  productiveContradictions: string[];
+}
+
+export interface CollisionTrace {
+  kind: "collision";
+  frames: CollisionTraceFrame[];
+  collisionMap: CollisionMapTrace;
+}
+
+export type ReasoningTrace = CompoundTrace | CollisionTrace;
+
 export interface ProgressUpdate {
   label: string;
 }
@@ -42,7 +65,7 @@ export interface EngineResponse {
   content: string;
   status: ResponseStatus;
   needsFollowup: boolean;
-  trace?: CompoundTrace;
+  trace?: ReasoningTrace;
 }
 
 export function isChatMessage(value: unknown): value is ChatMessage {

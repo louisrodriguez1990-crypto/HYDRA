@@ -14,7 +14,7 @@ type Role = "user" | "assistant";
 type MessageStatus = "draft" | "refining" | "final" | "fallback";
 type TraceNodeStatus = "complete" | "partial";
 
-interface MessageTraceNode {
+interface MessageCompoundTraceNode {
   id: string;
   question: string;
   dependsOn: string[];
@@ -22,10 +22,33 @@ interface MessageTraceNode {
   status: TraceNodeStatus;
 }
 
-interface MessageTrace {
+interface MessageCompoundTrace {
   kind: "compound";
-  nodes: MessageTraceNode[];
+  nodes: MessageCompoundTraceNode[];
 }
+
+interface MessageCollisionTraceFrame {
+  id: string;
+  title: string;
+  premise: string;
+  answer: string;
+  status: TraceNodeStatus;
+}
+
+interface MessageCollisionMap {
+  tensions: string[];
+  agreements: string[];
+  gaps: string[];
+  productiveContradictions: string[];
+}
+
+interface MessageCollisionTrace {
+  kind: "collision";
+  frames: MessageCollisionTraceFrame[];
+  collisionMap: MessageCollisionMap;
+}
+
+type MessageTrace = MessageCompoundTrace | MessageCollisionTrace;
 
 interface ChatMessage {
   id: string;
@@ -117,44 +140,100 @@ function isTraceNodeStatus(value: unknown): value is TraceNodeStatus {
   return value === "complete" || value === "partial";
 }
 
+function normalizeTraceStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
 function parseMessageTrace(value: unknown): MessageTrace | undefined {
   if (typeof value !== "object" || value === null) return undefined;
 
   const record = value as Record<string, unknown>;
-  if (record.kind !== "compound" || !Array.isArray(record.nodes)) return undefined;
+  if (record.kind === "compound" && Array.isArray(record.nodes)) {
+    const nodes = record.nodes
+      .map((node) => {
+        if (typeof node !== "object" || node === null) return null;
 
-  const nodes = record.nodes
-    .map((node) => {
-      if (typeof node !== "object" || node === null) return null;
+        const item = node as Record<string, unknown>;
+        if (
+          typeof item.id !== "string" ||
+          typeof item.question !== "string" ||
+          !Array.isArray(item.dependsOn) ||
+          item.dependsOn.some((dependency) => typeof dependency !== "string") ||
+          typeof item.answer !== "string" ||
+          !isTraceNodeStatus(item.status)
+        ) {
+          return null;
+        }
 
-      const item = node as Record<string, unknown>;
-      if (
-        typeof item.id !== "string" ||
-        typeof item.question !== "string" ||
-        !Array.isArray(item.dependsOn) ||
-        item.dependsOn.some((dependency) => typeof dependency !== "string") ||
-        typeof item.answer !== "string" ||
-        !isTraceNodeStatus(item.status)
-      ) {
-        return null;
-      }
+        return {
+          id: item.id,
+          question: item.question,
+          dependsOn: item.dependsOn as string[],
+          answer: item.answer,
+          status: item.status,
+        } satisfies MessageCompoundTraceNode;
+      })
+      .filter((node): node is MessageCompoundTraceNode => node !== null);
 
-      return {
-        id: item.id,
-        question: item.question,
-        dependsOn: item.dependsOn as string[],
-        answer: item.answer,
-        status: item.status,
-      } satisfies MessageTraceNode;
-    })
-    .filter((node): node is MessageTraceNode => node !== null);
+    if (nodes.length !== record.nodes.length) return undefined;
 
-  if (nodes.length !== record.nodes.length) return undefined;
+    return {
+      kind: "compound",
+      nodes,
+    };
+  }
 
-  return {
-    kind: "compound",
-    nodes,
-  };
+  if (record.kind === "collision" && Array.isArray(record.frames)) {
+    const frames = record.frames
+      .map((frame) => {
+        if (typeof frame !== "object" || frame === null) return null;
+
+        const item = frame as Record<string, unknown>;
+        if (
+          typeof item.id !== "string" ||
+          typeof item.title !== "string" ||
+          typeof item.premise !== "string" ||
+          typeof item.answer !== "string" ||
+          !isTraceNodeStatus(item.status)
+        ) {
+          return null;
+        }
+
+        return {
+          id: item.id,
+          title: item.title,
+          premise: item.premise,
+          answer: item.answer,
+          status: item.status,
+        } satisfies MessageCollisionTraceFrame;
+      })
+      .filter((frame): frame is MessageCollisionTraceFrame => frame !== null);
+
+    if (frames.length !== record.frames.length) return undefined;
+
+    const collisionMap =
+      typeof record.collisionMap === "object" && record.collisionMap !== null
+        ? (record.collisionMap as Record<string, unknown>)
+        : null;
+
+    if (!collisionMap) return undefined;
+
+    return {
+      kind: "collision",
+      frames,
+      collisionMap: {
+        tensions: normalizeTraceStringArray(collisionMap.tensions),
+        agreements: normalizeTraceStringArray(collisionMap.agreements),
+        gaps: normalizeTraceStringArray(collisionMap.gaps),
+        productiveContradictions: normalizeTraceStringArray(
+          collisionMap.productiveContradictions
+        ),
+      },
+    };
+  }
+
+  return undefined;
 }
 
 function summarizeTraceAnswer(answer: string) {
@@ -1274,6 +1353,12 @@ export default function HydraChatApp() {
           font-weight: 600;
           line-height: 1.5;
         }
+        .hydra-trace-premise {
+          margin: 0 0 8px;
+          color: #8f8f97;
+          font-size: 12px;
+          line-height: 1.6;
+        }
         .hydra-trace-answer {
           margin: 0;
           color: #b6b6bf;
@@ -1281,6 +1366,28 @@ export default function HydraChatApp() {
           line-height: 1.6;
           white-space: pre-wrap;
           word-break: break-word;
+        }
+        .hydra-trace-section {
+          padding: 12px;
+          border-radius: 14px;
+          border: 1px solid #343434;
+          background: #232323;
+        }
+        .hydra-trace-section-title {
+          margin: 0 0 10px;
+          color: #f5f5f5;
+          font-size: 13px;
+          font-weight: 700;
+          line-height: 1.4;
+        }
+        .hydra-trace-list {
+          margin: 0;
+          padding-left: 18px;
+          display: grid;
+          gap: 8px;
+          color: #b6b6bf;
+          font-size: 13px;
+          line-height: 1.6;
         }
         .hydra-code {
           border-radius: 16px;
@@ -1567,8 +1674,11 @@ export default function HydraChatApp() {
                           </div>
                         )}
                       {message.role === "assistant" &&
-                        message.trace?.kind === "compound" &&
-                        message.trace.nodes.length > 0 && (
+                        message.trace &&
+                        ((message.trace.kind === "compound" &&
+                          message.trace.nodes.length > 0) ||
+                          (message.trace.kind === "collision" &&
+                            message.trace.frames.length > 0)) && (
                           <div className="hydra-trace">
                             <button
                               className="hydra-trace-toggle"
@@ -1576,28 +1686,112 @@ export default function HydraChatApp() {
                               onClick={() => toggleTrace(message.id)}
                             >
                               {expandedTraceMessageId === message.id
-                                ? "Hide reasoning trace"
-                                : "Reasoning trace"}
+                                ? message.trace.kind === "collision"
+                                  ? "Hide collision trace"
+                                  : "Hide reasoning trace"
+                                : message.trace.kind === "collision"
+                                  ? "Collision trace"
+                                  : "Reasoning trace"}
                             </button>
                             {expandedTraceMessageId === message.id && (
                               <div className="hydra-trace-panel">
-                                {message.trace.nodes.map((node) => (
-                                  <div className="hydra-trace-node" key={`${message.id}-${node.id}`}>
-                                    <div className="hydra-trace-head">
-                                      <span className="hydra-trace-id">Node {node.id}</span>
-                                      <span className="hydra-badge">{node.status}</span>
-                                      {node.dependsOn.length > 0 && (
-                                        <span className="hydra-badge">
-                                          depends on {node.dependsOn.join(", ")}
-                                        </span>
-                                      )}
+                                {message.trace.kind === "compound" ? (
+                                  message.trace.nodes.map((node) => (
+                                    <div className="hydra-trace-node" key={`${message.id}-${node.id}`}>
+                                      <div className="hydra-trace-head">
+                                        <span className="hydra-trace-id">Node {node.id}</span>
+                                        <span className="hydra-badge">{node.status}</span>
+                                        {node.dependsOn.length > 0 && (
+                                          <span className="hydra-badge">
+                                            depends on {node.dependsOn.join(", ")}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="hydra-trace-question">{node.question}</p>
+                                      <p className="hydra-trace-answer">
+                                        {summarizeTraceAnswer(node.answer)}
+                                      </p>
                                     </div>
-                                    <p className="hydra-trace-question">{node.question}</p>
-                                    <p className="hydra-trace-answer">
-                                      {summarizeTraceAnswer(node.answer)}
-                                    </p>
-                                  </div>
-                                ))}
+                                  ))
+                                ) : (
+                                  <>
+                                    {message.trace.frames.map((frame) => (
+                                      <div className="hydra-trace-node" key={`${message.id}-${frame.id}`}>
+                                        <div className="hydra-trace-head">
+                                          <span className="hydra-trace-id">{frame.title}</span>
+                                          <span className="hydra-badge">{frame.status}</span>
+                                        </div>
+                                        <p className="hydra-trace-premise">{frame.premise}</p>
+                                        <p className="hydra-trace-answer">
+                                          {summarizeTraceAnswer(frame.answer)}
+                                        </p>
+                                      </div>
+                                    ))}
+
+                                    {message.trace.collisionMap.agreements.length > 0 && (
+                                      <div className="hydra-trace-section">
+                                        <p className="hydra-trace-section-title">
+                                          Robust agreements
+                                        </p>
+                                        <ul className="hydra-trace-list">
+                                          {message.trace.collisionMap.agreements.map((item, index) => (
+                                            <li key={`${message.id}-agreement-${index}`}>
+                                              {summarizeTraceAnswer(item)}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+
+                                    {message.trace.collisionMap.productiveContradictions.length >
+                                      0 && (
+                                      <div className="hydra-trace-section">
+                                        <p className="hydra-trace-section-title">
+                                          Productive contradictions
+                                        </p>
+                                        <ul className="hydra-trace-list">
+                                          {message.trace.collisionMap.productiveContradictions.map(
+                                            (item, index) => (
+                                              <li
+                                                key={`${message.id}-productive-contradiction-${index}`}
+                                              >
+                                                {summarizeTraceAnswer(item)}
+                                              </li>
+                                            )
+                                          )}
+                                        </ul>
+                                      </div>
+                                    )}
+
+                                    {message.trace.collisionMap.tensions.length > 0 && (
+                                      <div className="hydra-trace-section">
+                                        <p className="hydra-trace-section-title">Tensions</p>
+                                        <ul className="hydra-trace-list">
+                                          {message.trace.collisionMap.tensions.map((item, index) => (
+                                            <li key={`${message.id}-tension-${index}`}>
+                                              {summarizeTraceAnswer(item)}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+
+                                    {message.trace.collisionMap.gaps.length > 0 && (
+                                      <div className="hydra-trace-section">
+                                        <p className="hydra-trace-section-title">
+                                          Blind spots
+                                        </p>
+                                        <ul className="hydra-trace-list">
+                                          {message.trace.collisionMap.gaps.map((item, index) => (
+                                            <li key={`${message.id}-gap-${index}`}>
+                                              {summarizeTraceAnswer(item)}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
                               </div>
                             )}
                           </div>

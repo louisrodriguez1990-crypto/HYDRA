@@ -1,7 +1,15 @@
 import { call, parseJSON } from "./openrouter";
 import { MODELS } from "./models";
 import { reviewAndRevise, type ReviewSpec } from "./verify";
-import type { ChatMessage, EngineResponse, ProgressReporter, Rigor } from "./types";
+import type {
+  ChatMessage,
+  CollisionMapTrace,
+  CollisionTrace,
+  CollisionTraceFrame,
+  EngineResponse,
+  ProgressReporter,
+  Rigor,
+} from "./types";
 
 const DISCOVER_DRAFT_FALLBACK =
   "Hydra could not finish the creative exploration within the serverless time budget. Please retry if you want another pass.";
@@ -111,15 +119,75 @@ Audit it for feasibility.
 
 Return concise notes only.`;
 
+const COLLISION_FRAME_PROMPT = `You will analyze a problem from one deliberately forced frame.
+
+Rules:
+- Treat the assigned frame as temporarily true.
+- Use the supplied hard constraints as anchors.
+- Stay inside the frame even if you suspect another frame is stronger.
+- Do not reconcile with other frames.
+- Be concrete, mechanism-based, and concise.
+
+Output in this structure:
+1. Frame thesis
+2. What this frame says is really happening
+3. What becomes valuable, fragile, or overlooked if the frame is right
+4. Biggest weakness or disconfirming signal
+
+Do not mention hidden reasoning or internal process.`;
+
+const CONTRADICTION_MINER_PROMPT = `You will receive several analyses of the same problem built on deliberately incompatible assumptions.
+
+Do NOT reconcile them.
+Do NOT pick a winner.
+
+Return ONLY JSON with this shape:
+{
+  "tensions": ["..."],
+  "agreements": ["..."],
+  "gaps": ["..."],
+  "productiveContradictions": ["..."]
+}
+
+Rules:
+- tensions must name specific contradictions between frame outputs
+- agreements are only points where incompatible frames converge anyway
+- gaps are what none of the frames address directly
+- productiveContradictions must say what becomes true if at least two conflicting observations are partially true at the same time
+- if a section has no strong entries, return an empty array`;
+
+const COLLISION_SYNTHESIS_PROMPT = `You will receive a collision map showing where incompatible analyses contradict, agree, and leave blind spots.
+
+Your job is NOT to answer the original question in the ordinary way.
+Your job is to answer this question:
+"What insight becomes visible only when at least two incompatible frames are partially true at the same time?"
+
+Rules:
+- The insight must require at least two frames to be partially true
+- If no such insight emerges, say so clearly and lead with the most robust convergent agreement instead
+- Be concrete about the mechanism, not vague about "opportunity"
+- Use the original draft only as a weak prior, not as ground truth
+- Mention assumptions briefly when needed
+- Do not mention internal process, hidden reasoning, or frame names in the final prose unless they are necessary for clarity`;
+
 const ANALYSIS_TIMEOUT_MS = 18_000;
 const PROPOSAL_TIMEOUT_MS = 24_000;
 const REVIEW_TIMEOUT_MS = 18_000;
 const REVISION_TIMEOUT_MS = 24_000;
+const COLLISION_FRAME_TIMEOUT_MS = 26_000;
+const COLLISION_MAP_TIMEOUT_MS = 24_000;
+const COLLISION_SYNTHESIS_TIMEOUT_MS = 26_000;
 
 const ANALYSIS_MAX_TOKENS = 1200;
 const PROPOSAL_MAX_TOKENS = 1800;
 const REVIEW_MAX_TOKENS = 900;
 const REVISION_MAX_TOKENS = 1800;
+const COLLISION_FRAME_MAX_TOKENS = 1400;
+const COLLISION_MAP_MAX_TOKENS = 1400;
+const COLLISION_SYNTHESIS_MAX_TOKENS = 1800;
+
+const COLLISION_FRAME_FALLBACK =
+  "Hydra could not complete this frame analysis within the available request budget.";
 
 type DependencyEffect = "still_work" | "need_modification" | "fail";
 
@@ -155,6 +223,45 @@ interface CritiqueJob {
   modelId: string;
   prompt: string;
 }
+
+interface CollisionFrameSpec {
+  id: string;
+  title: string;
+  premise: string;
+  modelId: string;
+  temperature: number;
+  progressLabel: string;
+}
+
+const COLLISION_FRAME_SPECS: CollisionFrameSpec[] = [
+  {
+    id: "A",
+    title: "Consensus Frame",
+    premise:
+      "Assume the current consensus in this domain is broadly correct. The dominant actors are mostly rational, the usual signals are informative, and established approaches persist because they mostly work.",
+    modelId: MODELS.broad.id,
+    temperature: 0.25,
+    progressLabel: "Testing the consensus frame",
+  },
+  {
+    id: "B",
+    title: "Anti-Consensus Frame",
+    premise:
+      "Assume the current consensus in this domain is a collective delusion sustained by incentives. The dominant actors are optimizing for something other than what they publicly claim.",
+    modelId: MODELS.wild.id,
+    temperature: 0.45,
+    progressLabel: "Testing the anti-consensus frame",
+  },
+  {
+    id: "C",
+    title: "Structural Shift Frame",
+    premise:
+      "Assume this domain will look materially different within five years because of a structural shift that most participants have not yet internalized. Focus on what becomes true if that shift lands.",
+    modelId: MODELS.analyst.id,
+    temperature: 0.35,
+    progressLabel: "Testing the structural-shift frame",
+  },
+];
 
 async function notifyProgress(onProgress: ProgressReporter | undefined, label: string) {
   if (!onProgress) return;
@@ -226,6 +333,10 @@ function toNonEmptyString(value: unknown) {
 function normalizeStringArray(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => toNonEmptyString(item)).filter(Boolean);
+}
+
+function normalizeStringList(value: unknown, limit = 5) {
+  return normalizeStringArray(value).slice(0, limit);
 }
 
 function parseAnalysis(raw: string): FirstPrinciplesAnalysis | null {
@@ -345,6 +456,101 @@ ${hiddenFrame}
 
 Dependency map:
 ${dependencyMap}`;
+}
+
+function formatCollisionFrames(frames: CollisionTraceFrame[]) {
+  return frames
+    .map(
+      (frame) => `[${frame.id}] ${frame.title} (${frame.status})
+Premise: ${frame.premise}
+Analysis:
+${frame.answer}`
+    )
+    .join("\n\n");
+}
+
+function formatCollisionMapSection(title: string, items: string[]) {
+  if (items.length === 0) {
+    return `${title}:\n- None identified.`;
+  }
+
+  return `${title}:\n${items.map((item) => `- ${item}`).join("\n")}`;
+}
+
+function formatCollisionMap(collisionMap: CollisionMapTrace) {
+  return [
+    formatCollisionMapSection("Tensions", collisionMap.tensions),
+    formatCollisionMapSection("Agreements", collisionMap.agreements),
+    formatCollisionMapSection("Gaps", collisionMap.gaps),
+    formatCollisionMapSection(
+      "Productive contradictions",
+      collisionMap.productiveContradictions
+    ),
+  ].join("\n\n");
+}
+
+function parseCollisionMap(raw: string): CollisionMapTrace | null {
+  const parsed = parseJSON<Record<string, unknown>>(raw, {});
+  const collisionMap: CollisionMapTrace = {
+    tensions: normalizeStringList(parsed.tensions),
+    agreements: normalizeStringList(parsed.agreements),
+    gaps: normalizeStringList(parsed.gaps, 4),
+    productiveContradictions: normalizeStringList(
+      parsed.productiveContradictions ?? parsed.productive_contradictions
+    ),
+  };
+
+  if (
+    collisionMap.tensions.length === 0 &&
+    collisionMap.agreements.length === 0 &&
+    collisionMap.gaps.length === 0 &&
+    collisionMap.productiveContradictions.length === 0
+  ) {
+    return null;
+  }
+
+  return collisionMap;
+}
+
+function buildCollisionFallback(args: {
+  draft: string;
+  collisionMap: CollisionMapTrace;
+}) {
+  const { draft, collisionMap } = args;
+  const sections: string[] = [];
+
+  if (collisionMap.agreements.length > 0) {
+    sections.push(
+      `Robust agreements:\n${collisionMap.agreements
+        .slice(0, 2)
+        .map((item) => `- ${item}`)
+        .join("\n")}`
+    );
+  }
+
+  if (collisionMap.productiveContradictions.length > 0) {
+    sections.push(
+      `Productive contradictions:\n${collisionMap.productiveContradictions
+        .slice(0, 2)
+        .map((item) => `- ${item}`)
+        .join("\n")}`
+    );
+  }
+
+  if (collisionMap.gaps.length > 0) {
+    sections.push(
+      `Blind spots:\n${collisionMap.gaps
+        .slice(0, 1)
+        .map((item) => `- ${item}`)
+        .join("\n")}`
+    );
+  }
+
+  if (sections.length === 0) {
+    return draft;
+  }
+
+  return `${draft}\n\nMost useful signals from the frame collision:\n\n${sections.join("\n\n")}`;
 }
 
 async function runAssumptionBreaker(query: string, onProgress?: ProgressReporter) {
@@ -523,6 +729,185 @@ ${notes.join("\n\n")}`,
   return revised.trim();
 }
 
+async function runCollisionFrame(args: {
+  query: string;
+  analysis: FirstPrinciplesAnalysis;
+  frame: CollisionFrameSpec;
+  onProgress?: ProgressReporter;
+}) {
+  const { query, analysis, frame, onProgress } = args;
+  await notifyProgress(onProgress, frame.progressLabel);
+  const answer = await call(
+    frame.modelId,
+    [
+      { role: "system", content: COLLISION_FRAME_PROMPT },
+      {
+        role: "user",
+        content: `Question:
+${query}
+
+Assumption analysis:
+${formatAnalysis(analysis)}
+
+Forced frame [${frame.id}] ${frame.title}:
+${frame.premise}`,
+      },
+    ],
+    {
+      maxTokens: COLLISION_FRAME_MAX_TOKENS,
+      temperature: frame.temperature,
+      timeoutMs: COLLISION_FRAME_TIMEOUT_MS,
+    }
+  );
+
+  return {
+    id: frame.id,
+    title: frame.title,
+    premise: frame.premise,
+    answer: answer.trim() || COLLISION_FRAME_FALLBACK,
+    status: answer.trim() ? "complete" : "partial",
+  } satisfies CollisionTraceFrame;
+}
+
+async function mineContradictions(args: {
+  query: string;
+  analysis: FirstPrinciplesAnalysis;
+  frames: CollisionTraceFrame[];
+  onProgress?: ProgressReporter;
+}) {
+  const { query, analysis, frames, onProgress } = args;
+  await notifyProgress(onProgress, "Mining contradictions across the frames");
+  const raw = await call(
+    MODELS.analyst.id,
+    [
+      { role: "system", content: CONTRADICTION_MINER_PROMPT },
+      {
+        role: "user",
+        content: `Question:
+${query}
+
+Assumption analysis:
+${formatAnalysis(analysis)}
+
+Frame analyses:
+${formatCollisionFrames(frames)}`,
+      },
+    ],
+    {
+      maxTokens: COLLISION_MAP_MAX_TOKENS,
+      temperature: 0.2,
+      timeoutMs: COLLISION_MAP_TIMEOUT_MS,
+    }
+  );
+
+  if (!raw.trim()) return null;
+
+  return parseCollisionMap(raw);
+}
+
+async function synthesizeFromCollisionMap(args: {
+  query: string;
+  draft: string;
+  analysis: FirstPrinciplesAnalysis;
+  frames: CollisionTraceFrame[];
+  collisionMap: CollisionMapTrace;
+  onProgress?: ProgressReporter;
+}) {
+  const { query, draft, analysis, frames, collisionMap, onProgress } = args;
+  await notifyProgress(onProgress, "Synthesizing the invisible insight");
+  const response = await call(
+    MODELS.analyst.id,
+    [
+      { role: "system", content: COLLISION_SYNTHESIS_PROMPT },
+      {
+        role: "user",
+        content: `Question:
+${query}
+
+Original draft (weak prior; correct or discard when needed):
+${draft}
+
+Assumption analysis:
+${formatAnalysis(analysis)}
+
+Frame analyses:
+${formatCollisionFrames(frames)}
+
+Collision map:
+${formatCollisionMap(collisionMap)}`,
+      },
+    ],
+    {
+      maxTokens: COLLISION_SYNTHESIS_MAX_TOKENS,
+      temperature: 0.25,
+      timeoutMs: COLLISION_SYNTHESIS_TIMEOUT_MS,
+    }
+  );
+
+  return response.trim();
+}
+
+async function runCollisionDiscover(args: {
+  query: string;
+  draft: string;
+  analysis: FirstPrinciplesAnalysis;
+  onProgress?: ProgressReporter;
+}): Promise<EngineResponse | null> {
+  const { query, draft, analysis, onProgress } = args;
+  const frames = await Promise.all(
+    COLLISION_FRAME_SPECS.map((frame) =>
+      runCollisionFrame({ query, analysis, frame, onProgress })
+    )
+  );
+
+  const completeFrames = frames.filter((frame) => frame.status === "complete");
+  if (completeFrames.length < 2) {
+    return null;
+  }
+
+  const collisionMap = await mineContradictions({
+    query,
+    analysis,
+    frames,
+    onProgress,
+  });
+
+  if (!collisionMap) {
+    return null;
+  }
+
+  const trace: CollisionTrace = {
+    kind: "collision",
+    frames,
+    collisionMap,
+  };
+
+  const synthesized = await synthesizeFromCollisionMap({
+    query,
+    draft,
+    analysis,
+    frames,
+    collisionMap,
+    onProgress,
+  });
+
+  if (!synthesized) {
+    return {
+      content: buildCollisionFallback({ draft, collisionMap }),
+      status: "fallback",
+      needsFollowup: false,
+      trace,
+    };
+  }
+
+  return {
+    content: synthesized,
+    status: "final",
+    needsFollowup: false,
+    trace,
+  };
+}
+
 export async function draftDiscover(
   messages: ChatMessage[],
   rigor: Rigor = "balanced"
@@ -597,6 +982,19 @@ export async function refineDiscover(args: {
       status: revised.revised ? "final" : "fallback",
       needsFollowup: false,
     };
+  }
+
+  if (rigor === "rigorous") {
+    const collision = await runCollisionDiscover({
+      query,
+      draft: seed,
+      analysis,
+      onProgress,
+    });
+
+    if (collision) {
+      return collision;
+    }
   }
 
   const proposal = await deriveConstraintFirstProposal({
