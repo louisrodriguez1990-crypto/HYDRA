@@ -158,12 +158,16 @@ export interface ResearchReasoningSchema {
   axis: string;
   system: string;
   inputs: string;
+  assumption: string;
   mechanism: string;
   constraints: string;
   incentives: string;
   whyItPersists: string;
   failureModes: string;
   testOrFalsifier: string;
+  measurementPlan: string;
+  competitiveMoat: string;
+  executionBarrier: string;
   confidence: string;
 }
 
@@ -194,12 +198,16 @@ export interface ResearchCandidate {
   candidate: string;
   system: string;
   inputs: string;
+  assumption: string;
   mechanism: string;
   constraints: string;
   incentives: string;
   whyItPersists: string;
   failureModes: string;
   testOrFalsifier: string;
+  measurementPlan: string;
+  competitiveMoat: string;
+  executionBarrier: string;
   confidence: ResearchCandidateConfidence;
 }
 
@@ -242,12 +250,16 @@ export interface ResearchFinalist {
   candidate: string;
   system: string;
   inputs: string;
+  assumption: string;
   mechanism: string;
   constraints: string;
   incentives: string;
   whyItPersists: string;
   failureModes: string;
   testOrFalsifier: string;
+  measurementPlan: string;
+  competitiveMoat: string;
+  executionBarrier: string;
   totalScore: number;
   supportCount: number;
   averageRank: number;
@@ -270,15 +282,34 @@ export type ResearchVerificationStatus =
   | "plausible_but_unverified"
   | "contradicted";
 
+export type ResearchGoNoGoDecision = "go" | "watch" | "no-go";
+
 export interface ResearchVerificationPacketEntry {
   candidateId: string;
+  assumptionCheck: string;
   mechanismCheck: string;
+  measurementCheck: string;
+  evidenceSummary: string;
   executionFeasibilityCheck: string;
   constraintCheck: string;
   persistenceCheck: string;
   failureModeCheck: string;
+  competitiveMoatCheck: string;
   legalCompliancePolicyFlag: string;
+  falsificationCriterion: string;
+  viabilityThreshold: string;
+  goNoGoDecision: ResearchGoNoGoDecision;
   verificationStatus: ResearchVerificationStatus;
+  verificationSources: string[];
+}
+
+export interface ResearchRetryFeedback {
+  summary: string;
+  failedAssumptions: string[];
+  brokenMechanisms: string[];
+  missingMeasurementPatterns: string[];
+  moatExecutionMistakes: string[];
+  disallowedWeakPatterns: string[];
 }
 
 export interface ResearchTrace {
@@ -292,6 +323,9 @@ export interface ResearchTrace {
   selectedCandidateIds: string[];
   consensusSummary: string;
   verificationPacket: ResearchVerificationPacketEntry[];
+  retryOccurred: boolean;
+  retryFeedback?: ResearchRetryFeedback;
+  failClosedReason?: string;
   fallbackReason?: string;
 }
 

@@ -1,5 +1,7 @@
 import { MODELS } from "./models";
 import { call, parseJSON } from "./openrouter";
+import { runRepoContextQueries } from "./repo-context";
+import { runSearchQueries, type SearchWindow } from "./search";
 import type {
   ChatMessage,
   EngineResponse,
@@ -13,8 +15,10 @@ import type {
   ResearchFatalFlawCategory,
   ResearchFinalist,
   ResearchFrame,
+  ResearchGoNoGoDecision,
   ResearchReasoningSchema,
   ResearchRejected,
+  ResearchRetryFeedback,
   ResearchSearchAxis,
   ResearchTrace,
   ResearchVerificationPacketEntry,
@@ -55,6 +59,11 @@ const ELIMINATION_QUORUM = 3;
 const FINALIST_COUNT = 4;
 const SELECTED_COUNT = 2;
 
+const CODE_CONTEXT_PATTERN =
+  /```|\b(repo|repository|codebase|component|module|function|file|folder|route|api|app\/|lib\/|package\.json|next\.config|vercel\.json|tsx?|jsx?|bug|build|lint|test|typecheck|compile|refactor|implement|fix)\b/i;
+const WEB_CONTEXT_PATTERN =
+  /\b(latest|current|today|recent|news|look up|lookup|search online|search the web|verify|fact check|release|version|price|pricing|president|ceo|weather|score|schedule|stock|market|bond|yield|rate|legal|law|policy|regulation|compliance|data|benchmark|statistic|factual|as of)\b/i;
+
 const FATAL_FLAW_CATEGORIES: ResearchFatalFlawCategory[] = [
   "frame_violation",
   "weak_mechanism",
@@ -81,12 +90,16 @@ Output ONLY JSON:
     "axis": "...",
     "system": "...",
     "inputs": "...",
+    "assumption": "...",
     "mechanism": "...",
     "constraints": "...",
     "incentives": "...",
     "whyItPersists": "...",
     "failureModes": "...",
     "testOrFalsifier": "...",
+    "measurementPlan": "...",
+    "competitiveMoat": "...",
+    "executionBarrier": "...",
     "confidence": "..."
   },
   "disqualifiers": ["..."],
@@ -116,7 +129,8 @@ Output ONLY JSON:
 Rules:
 - Return exactly 10 search axes.
 - Keep it compact, operational, and mechanism-first.
-- Every candidate must be built from explicit mechanism, constraints, incentives, persistence, and failure modes.
+- Every candidate must be built from explicit mechanism, assumptions, constraints, incentives, persistence, measurement, and failure modes.
+- Every candidate must explain a credible competitive moat or execution barrier.
 - Any answer relying mainly on analogy, precedent, trend language, authority, or unsupported conclusion is invalid.
 - searchAxes must be orthogonal search directions, not paraphrases.
 - Do not answer the user.`;
@@ -131,15 +145,18 @@ Do not explain broadly.
 Do not use analogy, trend language, or authority as substitutes for mechanism.
 
 Your candidate will be judged by an elimination swarm.
-Candidates missing explicit mechanism, constraints, incentives, persistence, failure modes, or a falsifiable test will likely be eliminated.
+Candidates missing explicit mechanism, assumptions, constraints, incentives, persistence, measurement, moat/execution barriers, failure modes, or a falsifiable test will likely be eliminated.
 
 Before output, run this cheap self-check once:
 - Did I fill every field?
+- Did I name the core assumption?
 - Is the mechanism causal and step-by-step?
 - Did I name real constraints?
 - Did I explain why it persists?
 - Did I state what breaks it?
 - Did I include at least one observable test or falsifier?
+- Did I include a concrete measurement plan?
+- Did I explain why others do not or cannot compress it?
 - Is this distinct from generic category answers?
 
 Output ONLY JSON:
@@ -147,12 +164,16 @@ Output ONLY JSON:
   "candidate": "...",
   "system": "...",
   "inputs": "...",
+  "assumption": "...",
   "mechanism": "...",
   "constraints": "...",
   "incentives": "...",
   "whyItPersists": "...",
   "failureModes": "...",
   "testOrFalsifier": "...",
+  "measurementPlan": "...",
+  "competitiveMoat": "...",
+  "executionBarrier": "...",
   "confidence": "low|medium|high"
 }`;
 
@@ -221,6 +242,7 @@ Your job is to:
 - explain why they survived better than the other finalists
 - keep the explanation mechanism-first and readable
 - mention calibration or uncertainty only when the verification packet requires it
+- include compact execution guidance lines for each winner
 
 Do not change the selectedCandidateIds.
 Do not invent new candidates.
@@ -229,7 +251,17 @@ Do not paper over contradictions.
 Output ONLY JSON:
 {
   "answer": "..."
-}`;
+}
+
+Rules:
+- For each surviving winner, include:
+  - mechanism
+  - why it survived
+  - Decision: Go | Watch | No-Go
+  - Threshold: ...
+  - Falsifier: ...
+- If only one candidate survived verification, say explicitly that no second candidate cleared verification.
+- Keep contradicted candidates out of the main answer unless no alternative exists.`;
 
 const VERIFY_PROMPT = `You are calibrating already-selected finalists.
 
@@ -242,21 +274,35 @@ Output ONLY JSON:
   "packet": [
     {
       "candidateId": "A1",
+      "assumptionCheck": "...",
       "mechanismCheck": "...",
+      "measurementCheck": "...",
+      "evidenceSummary": "...",
       "executionFeasibilityCheck": "...",
       "constraintCheck": "...",
       "persistenceCheck": "...",
       "failureModeCheck": "...",
+      "competitiveMoatCheck": "...",
       "legalCompliancePolicyFlag": "...",
+      "falsificationCriterion": "...",
+      "viabilityThreshold": "...",
+      "goNoGoDecision": "go|watch|no-go",
+      "verificationSources": ["..."],
       "verificationStatus": "confirmed|plausible_but_unverified|contradicted"
     }
   ]
 }
 
 Rules:
-- Use "confirmed" only when the internal story is coherent and grounded.
+- Use "confirmed" only when external evidence is provided and it materially supports the claim.
+- Without external retrieval, default to "plausible_but_unverified" unless the claim materially breaks.
 - Use "plausible_but_unverified" when the story might hold but is not fully defensible from the provided material.
-- Use "contradicted" when the mechanism, constraints, persistence, or failure surface materially breaks.`;
+- Use "contradicted" when the mechanism, constraints, persistence, or failure surface materially breaks.
+- Return a falsification criterion and viability threshold for every candidate.
+- Keep go/no-go aligned with the verification status:
+  - confirmed -> usually go
+  - plausible_but_unverified -> usually watch
+  - contradicted -> no-go`;
 
 const FRAME_TIMEOUT_MS = 20_000;
 const CANDIDATE_SWARM_TIMEOUT_MS = 30_000;
@@ -320,6 +366,21 @@ interface SynthesizedResearchAnswer {
   selectedCandidateIds: string[];
 }
 
+interface VerificationRetrievalOutcome {
+  mode: "thread" | "repo" | "web";
+  queries: string[];
+  context: string;
+  summary: string;
+  sources: string[];
+  limitations: string[];
+  usedExternalEvidence: boolean;
+}
+
+interface VerificationRunResult {
+  packet: ResearchVerificationPacketEntry[];
+  retrieval: VerificationRetrievalOutcome;
+}
+
 function toNonEmptyString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -343,10 +404,33 @@ function uniqueBy<T>(items: T[], keyOf: (item: T) => string) {
   return unique;
 }
 
+function uniqueStrings(items: string[], limit = 8) {
+  return [...new Set(items.map((item) => item.trim()).filter(Boolean))].slice(0, limit);
+}
+
 function formatConversation(messages: ChatMessage[]) {
   return messages
     .map((message) => `${message.role.toUpperCase()}:\n${message.content.trim()}`)
     .join("\n\n");
+}
+
+function looksCodebaseOrFileTask(messages: ChatMessage[]) {
+  const thread = messages.map((message) => message.content).join("\n");
+  return CODE_CONTEXT_PATTERN.test(thread);
+}
+
+function looksWebFactTask(messages: ChatMessage[]) {
+  const thread = messages.map((message) => message.content).join("\n");
+  return WEB_CONTEXT_PATTERN.test(thread);
+}
+
+function buildWebWindow(messages: ChatMessage[]): SearchWindow {
+  const thread = messages.map((message) => message.content).join("\n");
+  return /\b(latest|current|today|recent|news|release|version|price|pricing|president|ceo|score|schedule|weather|stock|market|bond|yield|rate|policy|regulation|legal|law|as of)\b/i.test(
+    thread
+  )
+    ? "recent"
+    : "any";
 }
 
 function normalizeConfidence(value: unknown): ResearchCandidateConfidence {
@@ -463,10 +547,13 @@ function candidateDistinctnessSignature(candidate: ResearchCandidate) {
     [
       candidate.candidate,
       candidate.system,
+      candidate.assumption,
       candidate.mechanism,
       candidate.constraints,
       candidate.incentives,
       candidate.whyItPersists,
+      candidate.competitiveMoat,
+      candidate.executionBarrier,
     ].join(" ")
   );
 }
@@ -491,12 +578,16 @@ function buildFallbackReasoningSchema(): ResearchReasoningSchema {
     axis: "The assigned search axis.",
     system: "The system or environment where the idea lives.",
     inputs: "The minimum inputs, signals, or conditions needed.",
+    assumption: "The key claim about reality that must hold for the idea to work.",
     mechanism: "Step-by-step causal mechanism, not analogy.",
     constraints: "Real limiting factors or boundaries that matter.",
     incentives: "Why the participants behave this way.",
     whyItPersists: "Why the edge or pattern has not already disappeared.",
     failureModes: "What breaks the idea or makes it fail in practice.",
     testOrFalsifier: "One observable test that could prove the idea wrong.",
+    measurementPlan: "What evidence or measurement would validate the core claim.",
+    competitiveMoat: "Why others do not or cannot compress the edge immediately.",
+    executionBarrier: "What practical barrier makes execution hard in reality.",
     confidence: "Low, medium, or high based on structural clarity.",
   };
 }
@@ -577,7 +668,8 @@ function buildFallbackFrame(query: string): ResearchFrame {
     governingInterpretation:
       "Search for mechanistic, constraint-aware, persistence-aware candidates and reject anything vibe-based, analogical, or causally empty.",
     successCriteria: [
-      "Return candidates with explicit mechanism, constraints, incentives, persistence, and failure modes.",
+      "Return candidates with explicit assumptions, mechanism, constraints, incentives, persistence, measurement, and failure modes.",
+      "Force every candidate to name a competitive moat or execution barrier.",
       "Favor first-principles system reasoning over summaries or category lists.",
       "Keep only finalists that survive elimination and calibration.",
     ],
@@ -586,6 +678,7 @@ function buildFallbackFrame(query: string): ResearchFrame {
       "Vibe-based or trend-based answers",
       "Category summaries without mechanism",
       "Authority-based claims without causal support",
+      "Ideas without a measurable threshold or falsifier",
       "Ideas that cannot explain persistence or failure",
     ],
     commonTraps: [
@@ -655,12 +748,19 @@ function normalizeReasoningSchema(
     axis: toNonEmptyString(record.axis) || fallback.axis,
     system: toNonEmptyString(record.system) || fallback.system,
     inputs: toNonEmptyString(record.inputs) || fallback.inputs,
+    assumption: toNonEmptyString(record.assumption) || fallback.assumption,
     mechanism: toNonEmptyString(record.mechanism) || fallback.mechanism,
     constraints: toNonEmptyString(record.constraints) || fallback.constraints,
     incentives: toNonEmptyString(record.incentives) || fallback.incentives,
     whyItPersists: toNonEmptyString(record.whyItPersists) || fallback.whyItPersists,
     failureModes: toNonEmptyString(record.failureModes) || fallback.failureModes,
     testOrFalsifier: toNonEmptyString(record.testOrFalsifier) || fallback.testOrFalsifier,
+    measurementPlan:
+      toNonEmptyString(record.measurementPlan) || fallback.measurementPlan,
+    competitiveMoat:
+      toNonEmptyString(record.competitiveMoat) || fallback.competitiveMoat,
+    executionBarrier:
+      toNonEmptyString(record.executionBarrier) || fallback.executionBarrier,
     confidence: toNonEmptyString(record.confidence) || fallback.confidence,
   };
 }
@@ -768,12 +868,16 @@ function formatReasoningSchema(schema: ResearchReasoningSchema) {
 - axis: ${schema.axis}
 - system: ${schema.system}
 - inputs: ${schema.inputs}
+- assumption: ${schema.assumption}
 - mechanism: ${schema.mechanism}
 - constraints: ${schema.constraints}
 - incentives: ${schema.incentives}
 - whyItPersists: ${schema.whyItPersists}
 - failureModes: ${schema.failureModes}
 - testOrFalsifier: ${schema.testOrFalsifier}
+- measurementPlan: ${schema.measurementPlan}
+- competitiveMoat: ${schema.competitiveMoat}
+- executionBarrier: ${schema.executionBarrier}
 - confidence: ${schema.confidence}`;
 }
 
@@ -818,12 +922,16 @@ function formatCandidate(candidate: ResearchCandidate) {
 Axis: ${candidate.axisLabel}
 System: ${candidate.system}
 Inputs: ${candidate.inputs}
+Assumption: ${candidate.assumption}
 Mechanism: ${candidate.mechanism}
 Constraints: ${candidate.constraints}
 Incentives: ${candidate.incentives}
 Why it persists: ${candidate.whyItPersists}
 Failure modes: ${candidate.failureModes}
 Test or falsifier: ${candidate.testOrFalsifier}
+Measurement plan: ${candidate.measurementPlan}
+Competitive moat: ${candidate.competitiveMoat}
+Execution barrier: ${candidate.executionBarrier}
 Confidence: ${candidate.confidence}`;
 }
 
@@ -838,11 +946,15 @@ function normalizeCandidate(value: unknown, axis: ResearchSearchAxis): ResearchC
   const missingFields = [
     !toNonEmptyString(record.system),
     !toNonEmptyString(record.inputs),
+    !toNonEmptyString(record.assumption),
     !toNonEmptyString(record.constraints),
     !toNonEmptyString(record.incentives),
     !toNonEmptyString(record.whyItPersists),
     !toNonEmptyString(record.failureModes),
     !toNonEmptyString(record.testOrFalsifier),
+    !toNonEmptyString(record.measurementPlan),
+    !toNonEmptyString(record.competitiveMoat),
+    !toNonEmptyString(record.executionBarrier),
   ].filter(Boolean).length;
 
   const normalizedConfidence =
@@ -859,6 +971,9 @@ function normalizeCandidate(value: unknown, axis: ResearchSearchAxis): ResearchC
     inputs:
       toNonEmptyString(record.inputs) ||
       "Not made explicit; weak by default because the required inputs are unclear.",
+    assumption:
+      toNonEmptyString(record.assumption) ||
+      "No explicit assumption was named; weak by default until the core claim about reality is stated.",
     mechanism,
     constraints:
       toNonEmptyString(record.constraints) ||
@@ -875,6 +990,15 @@ function normalizeCandidate(value: unknown, axis: ResearchSearchAxis): ResearchC
     testOrFalsifier:
       toNonEmptyString(record.testOrFalsifier) ||
       "No falsifier was provided; weak by default until one observable test is named.",
+    measurementPlan:
+      toNonEmptyString(record.measurementPlan) ||
+      "No measurement plan was provided; weak by default until evidence collection is defined.",
+    competitiveMoat:
+      toNonEmptyString(record.competitiveMoat) ||
+      "No competitive moat was provided; weak by default until it explains why others do not compress it.",
+    executionBarrier:
+      toNonEmptyString(record.executionBarrier) ||
+      "No execution barrier was provided; weak by default until real-world friction is named.",
     confidence: normalizedConfidence,
   };
 }
@@ -1044,12 +1168,16 @@ function buildFinalistFromCandidate(args: {
     candidate: candidate.candidate,
     system: candidate.system,
     inputs: candidate.inputs,
+    assumption: candidate.assumption,
     mechanism: candidate.mechanism,
     constraints: candidate.constraints,
     incentives: candidate.incentives,
     whyItPersists: candidate.whyItPersists,
     failureModes: candidate.failureModes,
     testOrFalsifier: candidate.testOrFalsifier,
+    measurementPlan: candidate.measurementPlan,
+    competitiveMoat: candidate.competitiveMoat,
+    executionBarrier: candidate.executionBarrier,
     totalScore: stats.totalScore,
     supportCount: stats.supportCount,
     averageRank: averageRank(stats.rankSum, stats.supportCount),
@@ -1289,6 +1417,9 @@ function buildTrace(args: {
   consensus: EliminationConsensusResult;
   selectedCandidateIds: string[];
   verificationPacket: ResearchVerificationPacketEntry[];
+  retryOccurred: boolean;
+  retryFeedback?: ResearchRetryFeedback;
+  failClosedReason?: string;
   fallbackReason?: string;
 }): ResearchTrace {
   return {
@@ -1302,6 +1433,9 @@ function buildTrace(args: {
     selectedCandidateIds: args.selectedCandidateIds,
     consensusSummary: args.consensus.consensusSummary,
     verificationPacket: args.verificationPacket,
+    retryOccurred: args.retryOccurred,
+    ...(args.retryFeedback ? { retryFeedback: args.retryFeedback } : {}),
+    ...(args.failClosedReason ? { failClosedReason: args.failClosedReason } : {}),
     ...(args.fallbackReason ? { fallbackReason: args.fallbackReason } : {}),
   };
 }
@@ -1309,6 +1443,151 @@ function buildTrace(args: {
 async function notifyProgress(onProgress: ProgressReporter | undefined, label: string) {
   if (!onProgress) return;
   await onProgress({ label });
+}
+
+function formatRepoContext(result: Awaited<ReturnType<typeof runRepoContextQueries>>) {
+  const lines: string[] = [];
+
+  for (const query of result.queries) {
+    lines.push(`Repo query: ${query.query}`);
+    if (query.matches.length === 0) {
+      lines.push("- No repo matches found.");
+      lines.push("");
+      continue;
+    }
+
+    for (const match of query.matches) {
+      lines.push(`- ${match.path}`);
+      lines.push(`  ${match.snippet}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
+}
+
+function formatWebContext(result: Awaited<ReturnType<typeof runSearchQueries>>) {
+  const lines: string[] = [];
+
+  for (const query of result.queries) {
+    lines.push(`Web query: ${query.query}`);
+    if (query.results.length === 0) {
+      lines.push("- No web results found.");
+      lines.push("");
+      continue;
+    }
+
+    for (const item of query.results) {
+      lines.push(`- ${item.title}`);
+      lines.push(`  URL: ${item.url}`);
+      if (item.description) {
+        lines.push(`  ${item.description}`);
+      }
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
+}
+
+function buildVerificationQueries(
+  query: string,
+  finalists: ResearchFinalist[],
+  mode: "repo" | "web"
+) {
+  const candidateQueries =
+    mode === "repo"
+      ? finalists.flatMap((finalist) => [
+          finalist.axisLabel,
+          finalist.candidate,
+          `${finalist.system} ${finalist.candidate}`,
+        ])
+      : finalists.flatMap((finalist) => [
+          finalist.candidate,
+          `${finalist.system} ${finalist.assumption}`,
+          `${finalist.candidate} ${finalist.measurementPlan}`,
+        ]);
+
+  return uniqueStrings([query, ...candidateQueries], 3);
+}
+
+async function gatherVerificationContext(args: {
+  messages: ChatMessage[];
+  finalists: ResearchFinalist[];
+}): Promise<VerificationRetrievalOutcome> {
+  const { messages, finalists } = args;
+  const query = messages[messages.length - 1]?.content ?? "";
+
+  if (looksCodebaseOrFileTask(messages)) {
+    const queries = buildVerificationQueries(query, finalists, "repo");
+    const repoContext = await runRepoContextQueries(queries);
+    const sources = uniqueStrings(
+      repoContext.queries.flatMap((item) => item.matches.map((match) => match.path)),
+      6
+    );
+    const matchCount = repoContext.queries.reduce(
+      (count, item) => count + item.matches.length,
+      0
+    );
+
+    return {
+      mode: "repo",
+      queries,
+      context: formatRepoContext(repoContext) || "No repo retrieval context was captured.",
+      summary:
+        matchCount > 0
+          ? `Repo verification found ${matchCount} relevant file snippets.`
+          : "Repo verification did not find relevant file snippets.",
+      sources,
+      limitations:
+        !repoContext.available && repoContext.error
+          ? [`Repo verification was limited: ${repoContext.error}`]
+          : [],
+      usedExternalEvidence: matchCount > 0,
+    };
+  }
+
+  if (looksWebFactTask(messages)) {
+    const queries = buildVerificationQueries(query, finalists, "web");
+    const webContext = await runSearchQueries(queries, buildWebWindow(messages));
+    const sources = uniqueStrings(
+      webContext.queries.flatMap((item) =>
+        item.results.map((result) => `${result.title} (${result.url})`)
+      ),
+      6
+    );
+    const resultCount = webContext.queries.reduce(
+      (count, item) => count + item.results.length,
+      0
+    );
+
+    return {
+      mode: "web",
+      queries,
+      context: formatWebContext(webContext) || "No web verification context was captured.",
+      summary:
+        resultCount > 0
+          ? `Web verification found ${resultCount} relevant external results.`
+          : "Web verification did not find relevant external results.",
+      sources,
+      limitations:
+        !webContext.available && webContext.error
+          ? [`Web verification was limited: ${webContext.error}`]
+          : [],
+      usedExternalEvidence: resultCount > 0,
+    };
+  }
+
+  return {
+    mode: "thread",
+    queries: [],
+    context: "No external retrieval was used. Verification stayed inside the thread and candidate structure.",
+    summary:
+      "No external retrieval was needed, so verification should stay calibrated as plausible but unverified unless the logic materially breaks.",
+    sources: [],
+    limitations: [],
+    usedExternalEvidence: false,
+  };
 }
 
 async function runFrame(messages: ChatMessage[], rigor: Rigor) {
@@ -1347,8 +1626,9 @@ Additional guidance:
 async function runCandidateSwarm(args: {
   frame: ResearchFrame;
   rigor: Rigor;
+  verifierFeedback?: ResearchRetryFeedback;
 }) {
-  const { frame, rigor } = args;
+  const { frame, rigor, verifierFeedback } = args;
 
   const settled = await Promise.allSettled(
     frame.searchAxes.slice(0, AXIS_COUNT).map(async (axis) => {
@@ -1367,11 +1647,22 @@ ${axis.label}
 Axis prompt:
 ${axis.prompt}
 
-Additional guidance:
+${verifierFeedback
+  ? `Verifier feedback from the failed round:
+- Summary: ${verifierFeedback.summary}
+- Failed assumptions: ${verifierFeedback.failedAssumptions.join(" | ") || "None captured"}
+- Broken mechanisms: ${verifierFeedback.brokenMechanisms.join(" | ") || "None captured"}
+- Missing measurement patterns: ${verifierFeedback.missingMeasurementPatterns.join(" | ") || "None captured"}
+- Moat/execution mistakes: ${verifierFeedback.moatExecutionMistakes.join(" | ") || "None captured"}
+- Disallowed weak patterns: ${verifierFeedback.disallowedWeakPatterns.join(" | ") || "None captured"}
+
+`
+  : ""}Additional guidance:
 - Return exactly one candidate object.
 - Mechanism matters more than creativity.
 - Novelty without causal structure is worthless.
-- A vague but stylish answer will be eliminated.`,
+- A vague but stylish answer will be eliminated.
+- Do not repeat mistakes called out in the verifier feedback.`,
           },
         ],
         {
@@ -1487,12 +1778,16 @@ ${finalists
 Axis: ${finalist.axisLabel}
 System: ${finalist.system}
 Inputs: ${finalist.inputs}
+Assumption: ${finalist.assumption}
 Mechanism: ${finalist.mechanism}
 Constraints: ${finalist.constraints}
 Incentives: ${finalist.incentives}
 Why it persists: ${finalist.whyItPersists}
 Failure modes: ${finalist.failureModes}
 Test or falsifier: ${finalist.testOrFalsifier}
+Measurement plan: ${finalist.measurementPlan}
+Competitive moat: ${finalist.competitiveMoat}
+Execution barrier: ${finalist.executionBarrier}
 Total score: ${finalist.totalScore}
 Support count: ${finalist.supportCount}
 Average rank: ${finalist.averageRank}
@@ -1543,22 +1838,88 @@ ${fallbackReason ? `Fallback reason:\n${fallbackReason}\n\n` : ""}Additional gui
   } satisfies SynthesizedResearchAnswer;
 }
 
+function normalizeGoNoGoDecision(
+  value: unknown,
+  verificationStatus: ResearchVerificationPacketEntry["verificationStatus"]
+): ResearchGoNoGoDecision {
+  const normalized = toNonEmptyString(value).toLowerCase().replace(/\s+/g, "-");
+  const candidate =
+    normalized === "go" || normalized === "watch" || normalized === "no-go"
+      ? normalized
+      : verificationStatus === "confirmed"
+        ? "go"
+        : verificationStatus === "contradicted"
+          ? "no-go"
+          : "watch";
+
+  if (verificationStatus === "contradicted") return "no-go";
+  if (verificationStatus === "confirmed" && candidate === "no-go") return "watch";
+  return candidate;
+}
+
+function buildDefaultVerificationEntry(
+  finalist: ResearchFinalist,
+  retrieval: VerificationRetrievalOutcome
+): ResearchVerificationPacketEntry {
+  return {
+    candidateId: finalist.candidateId,
+    assumptionCheck:
+      retrieval.usedExternalEvidence
+        ? `The assumption needs stronger grounding against the retrieved evidence: ${finalist.assumption}`
+        : `The assumption remains plausible but unverified without external grounding: ${finalist.assumption}`,
+    mechanismCheck:
+      "The mechanism stayed structurally coherent, but it still needs evidence beyond the candidate narrative.",
+    measurementCheck:
+      finalist.measurementPlan ||
+      "No concrete measurement plan was captured, so the claim remains weakly grounded.",
+    evidenceSummary: retrieval.summary,
+    executionFeasibilityCheck:
+      finalist.executionBarrier ||
+      "Execution feasibility is still unclear because the practical barrier was not made explicit.",
+    constraintCheck:
+      finalist.constraints ||
+      "Constraint realism was not made explicit enough to clear verification.",
+    persistenceCheck:
+      finalist.whyItPersists ||
+      "Persistence was not defended strongly enough to clear verification.",
+    failureModeCheck:
+      finalist.failureModes ||
+      "Failure modes were not detailed enough to clear verification.",
+    competitiveMoatCheck:
+      finalist.competitiveMoat ||
+      "Competitive moat was not made explicit enough to justify durability.",
+    legalCompliancePolicyFlag: "No explicit flag noted.",
+    falsificationCriterion:
+      finalist.testOrFalsifier ||
+      "If the core measurement plan does not support the claim, treat the candidate as invalid.",
+    viabilityThreshold:
+      finalist.measurementPlan ||
+      "Require the measurement plan to show a durable edge net of execution friction before moving from watch to go.",
+    goNoGoDecision: "watch",
+    verificationStatus: "plausible_but_unverified",
+    verificationSources: retrieval.sources.slice(0, 4),
+  };
+}
+
 function normalizeVerificationPacket(
   value: unknown,
-  selectedCandidateIds: string[]
+  finalists: ResearchFinalist[],
+  retrieval: VerificationRetrievalOutcome
 ) {
-  const allowedIds = new Set(selectedCandidateIds);
+  const finalistMap = new Map(finalists.map((finalist) => [finalist.candidateId, finalist]));
   const parsed = Array.isArray(value)
     ? value
         .map((entry) => {
           if (typeof entry !== "object" || entry === null) return null;
           const record = entry as Record<string, unknown>;
           const candidateId = toNonEmptyString(record.candidateId);
-          const verificationStatus = record.verificationStatus;
+          const finalist = finalistMap.get(candidateId);
+          let verificationStatus =
+            record.verificationStatus as ResearchVerificationPacketEntry["verificationStatus"];
 
           if (
             !candidateId ||
-            !allowedIds.has(candidateId) ||
+            !finalist ||
             (verificationStatus !== "confirmed" &&
               verificationStatus !== "plausible_but_unverified" &&
               verificationStatus !== "contradicted")
@@ -1566,59 +1927,108 @@ function normalizeVerificationPacket(
             return null;
           }
 
+          let verificationSources = normalizeStringArray(record.verificationSources, 6);
+          if (verificationSources.length === 0 && retrieval.sources.length > 0) {
+            verificationSources = retrieval.sources.slice(0, 4);
+          }
+
+          const evidenceSummary =
+            toNonEmptyString(record.evidenceSummary) ||
+            retrieval.summary ||
+            "No explicit evidence summary was captured.";
+
+          if (
+            verificationStatus === "confirmed" &&
+            (!retrieval.usedExternalEvidence ||
+              verificationSources.length === 0 ||
+              !evidenceSummary)
+          ) {
+            verificationStatus = "plausible_but_unverified";
+          }
+
           return {
             candidateId,
+            assumptionCheck:
+              toNonEmptyString(record.assumptionCheck) ||
+              `The assumption still needs sharper grounding: ${finalist.assumption}`,
             mechanismCheck:
               toNonEmptyString(record.mechanismCheck) ||
               "Mechanism was not fully checked; treat as plausible but unverified.",
+            measurementCheck:
+              toNonEmptyString(record.measurementCheck) ||
+              finalist.measurementPlan ||
+              "Measurement was not fully checked; treat as plausible but unverified.",
+            evidenceSummary,
             executionFeasibilityCheck:
               toNonEmptyString(record.executionFeasibilityCheck) ||
+              finalist.executionBarrier ||
               "Execution feasibility was not fully checked; treat as plausible but unverified.",
             constraintCheck:
               toNonEmptyString(record.constraintCheck) ||
+              finalist.constraints ||
               "Constraints were not fully checked; treat as plausible but unverified.",
             persistenceCheck:
               toNonEmptyString(record.persistenceCheck) ||
+              finalist.whyItPersists ||
               "Persistence was not fully checked; treat as plausible but unverified.",
             failureModeCheck:
               toNonEmptyString(record.failureModeCheck) ||
+              finalist.failureModes ||
               "Failure modes were not fully checked; treat as plausible but unverified.",
+            competitiveMoatCheck:
+              toNonEmptyString(record.competitiveMoatCheck) ||
+              finalist.competitiveMoat ||
+              "Competitive moat was not fully checked; treat as plausible but unverified.",
             legalCompliancePolicyFlag:
               toNonEmptyString(record.legalCompliancePolicyFlag) || "No explicit flag noted.",
+            falsificationCriterion:
+              toNonEmptyString(record.falsificationCriterion) ||
+              finalist.testOrFalsifier ||
+              "If the core measurement plan fails, treat the candidate as invalid.",
+            viabilityThreshold:
+              toNonEmptyString(record.viabilityThreshold) ||
+              finalist.measurementPlan ||
+              "Require external evidence to clear the measurement plan before moving to execution.",
+            goNoGoDecision: normalizeGoNoGoDecision(record.goNoGoDecision, verificationStatus),
             verificationStatus,
+            verificationSources,
           } satisfies ResearchVerificationPacketEntry;
         })
         .filter((entry): entry is ResearchVerificationPacketEntry => entry !== null)
     : [];
 
   const entries = uniqueBy(parsed, (entry) => entry.candidateId);
-  for (const candidateId of selectedCandidateIds) {
-    if (entries.some((entry) => entry.candidateId === candidateId)) continue;
-    entries.push({
-      candidateId,
-      mechanismCheck: "Mechanism was not fully checked; treat as plausible but unverified.",
-      executionFeasibilityCheck:
-        "Execution feasibility was not fully checked; treat as plausible but unverified.",
-      constraintCheck: "Constraints were not fully checked; treat as plausible but unverified.",
-      persistenceCheck: "Persistence was not fully checked; treat as plausible but unverified.",
-      failureModeCheck:
-        "Failure modes were not fully checked; treat as plausible but unverified.",
-      legalCompliancePolicyFlag: "No explicit flag noted.",
-      verificationStatus: "plausible_but_unverified",
-    });
+  for (const finalist of finalists) {
+    if (entries.some((entry) => entry.candidateId === finalist.candidateId)) continue;
+    entries.push(buildDefaultVerificationEntry(finalist, retrieval));
   }
 
   return entries;
 }
 
 async function runVerify(args: {
+  messages: ChatMessage[];
   frame: ResearchFrame;
   finalists: ResearchFinalist[];
   rigor: Rigor;
-}) {
-  const { frame, finalists, rigor } = args;
-  if (finalists.length === 0) return [] as ResearchVerificationPacketEntry[];
+}): Promise<VerificationRunResult> {
+  const { messages, frame, finalists, rigor } = args;
+  if (finalists.length === 0) {
+    return {
+      packet: [],
+      retrieval: {
+        mode: "thread",
+        queries: [],
+        context: "No finalists were provided for verification.",
+        summary: "No finalists were provided for verification.",
+        sources: [],
+        limitations: [],
+        usedExternalEvidence: false,
+      },
+    };
+  }
 
+  const retrieval = await gatherVerificationContext({ messages, finalists });
   const raw = await call(
     RESEARCH_MODELS.verify,
     [
@@ -1628,6 +2038,21 @@ async function runVerify(args: {
         content: `Framing object:
 ${formatFrame(frame)}
 
+Verification mode:
+${retrieval.mode}
+
+Verification queries:
+${retrieval.queries.length > 0 ? retrieval.queries.join(" | ") : "None"}
+
+Evidence summary:
+${retrieval.summary}
+
+Retrieved evidence:
+${retrieval.context}
+
+Known limitations:
+${retrieval.limitations.length > 0 ? retrieval.limitations.map((item) => `- ${item}`).join("\n") : "- None named"}
+
 Selected finalists to verify:
 ${finalists
   .map(
@@ -1635,12 +2060,16 @@ ${finalists
 Axis: ${finalist.axisLabel}
 System: ${finalist.system}
 Inputs: ${finalist.inputs}
+Assumption: ${finalist.assumption}
 Mechanism: ${finalist.mechanism}
 Constraints: ${finalist.constraints}
 Incentives: ${finalist.incentives}
 Why it persists: ${finalist.whyItPersists}
 Failure modes: ${finalist.failureModes}
 Test or falsifier: ${finalist.testOrFalsifier}
+Measurement plan: ${finalist.measurementPlan}
+Competitive moat: ${finalist.competitiveMoat}
+Execution barrier: ${finalist.executionBarrier}
 Advanced because: ${finalist.advancedBecause}
 Main objections: ${finalist.mainObjections.join(" | ") || "None captured"}`
   )
@@ -1648,12 +2077,14 @@ Main objections: ${finalist.mainObjections.join(" | ") || "None captured"}`
 
 Additional guidance:
 - Be skeptical.
-- Use contradicted only when the story materially breaks.
-- Prefer plausible_but_unverified when the story is coherent but not fully grounded from the available material.`,
+- If retrieval mode is thread-only, use plausible_but_unverified unless the story materially breaks.
+- Confirmed requires evidence that actually supports the claim.
+- Use the measurement plan to derive the viability threshold.
+- Use the test or falsifier to derive the falsification criterion.`,
       },
     ],
     {
-      maxTokens: rigor === "rigorous" ? 1_600 : 1_250,
+      maxTokens: rigor === "rigorous" ? 1_900 : 1_500,
       temperature: 0.15,
       timeoutMs: VERIFY_TIMEOUT_MS,
       reasoning: {
@@ -1664,7 +2095,10 @@ Additional guidance:
   );
 
   const parsed = parseJSON<Record<string, unknown>>(raw, {});
-  return normalizeVerificationPacket(parsed.packet, finalists.map((finalist) => finalist.candidateId));
+  return {
+    packet: normalizeVerificationPacket(parsed.packet, finalists, retrieval),
+    retrieval,
+  };
 }
 
 function summarizeVerificationPacket(packet: ResearchVerificationPacketEntry[]) {
@@ -1672,15 +2106,20 @@ function summarizeVerificationPacket(packet: ResearchVerificationPacketEntry[]) 
   return packet
     .map(
       (entry) =>
-        `${entry.candidateId}: ${entry.verificationStatus}; mechanism ${entry.mechanismCheck}; persistence ${entry.persistenceCheck}`
+        `${entry.candidateId}: ${entry.verificationStatus}; decision ${entry.goNoGoDecision}; threshold ${entry.viabilityThreshold}; falsifier ${entry.falsificationCriterion}`
     )
     .join("\n");
+}
+
+function formatDecisionLabel(decision: ResearchGoNoGoDecision) {
+  return decision === "no-go" ? "No-Go" : decision === "go" ? "Go" : "Watch";
 }
 
 function buildVerificationFallbackAnswer(args: {
   finalists: ResearchFinalist[];
   selectedCandidateIds: string[];
   verificationPacket: ResearchVerificationPacketEntry[];
+  explicitNoSecondWinner?: boolean;
 }) {
   const finalistMap = new Map(args.finalists.map((item) => [item.candidateId, item]));
   const verificationMap = new Map(
@@ -1695,14 +2134,12 @@ function buildVerificationFallbackAnswer(args: {
 
   const winnerLines = selected.map((candidate, index) => {
     const verification = verificationMap.get(candidate.candidateId);
-    const calibration =
-      verification?.verificationStatus === "confirmed"
-        ? "Calibration: confirmed."
-        : verification?.verificationStatus === "contradicted"
-          ? "Calibration: contradicted."
-          : "Calibration: plausible but unverified.";
-
-    return `${index + 1}. ${candidate.candidate}: ${candidate.mechanism} Constraints: ${candidate.constraints} Why it survived: ${candidate.advancedBecause} ${calibration}`;
+    return `${index + 1}. ${candidate.candidate}
+Mechanism: ${candidate.mechanism}
+Why it survived: ${candidate.advancedBecause}
+Decision: ${formatDecisionLabel(verification?.goNoGoDecision ?? "watch")}
+Threshold: ${verification?.viabilityThreshold || candidate.measurementPlan}
+Falsifier: ${verification?.falsificationCriterion || candidate.testOrFalsifier}`;
   });
 
   const otherLine =
@@ -1712,7 +2149,11 @@ function buildVerificationFallbackAnswer(args: {
           .join("; ")}.`
       : "No other finalists were available for contrast.";
 
-  return `${winnerLines.join("\n\n")}\n\n${otherLine}`;
+  const singleWinnerLine = args.explicitNoSecondWinner
+    ? "No second candidate cleared verification strongly enough to surface as a winner."
+    : "";
+
+  return [winnerLines.join("\n\n"), singleWinnerLine, otherLine].filter(Boolean).join("\n\n");
 }
 
 async function runFinalize(args: {
@@ -1721,8 +2162,16 @@ async function runFinalize(args: {
   selectedCandidateIds: string[];
   verificationPacket: ResearchVerificationPacketEntry[];
   rigor: Rigor;
+  explicitNoSecondWinner?: boolean;
 }) {
-  const { frame, finalists, selectedCandidateIds, verificationPacket, rigor } = args;
+  const {
+    frame,
+    finalists,
+    selectedCandidateIds,
+    verificationPacket,
+    rigor,
+    explicitNoSecondWinner,
+  } = args;
   const finalistMap = new Map(finalists.map((finalist) => [finalist.candidateId, finalist]));
   const selectedFinalists = selectedCandidateIds
     .map((candidateId) => finalistMap.get(candidateId))
@@ -1730,6 +2179,8 @@ async function runFinalize(args: {
   const otherFinalists = finalists.filter(
     (candidate) => !selectedCandidateIds.includes(candidate.candidateId)
   );
+
+  if (selectedFinalists.length === 0) return "";
 
   const raw = await call(
     RESEARCH_MODELS.synthesize,
@@ -1746,12 +2197,16 @@ ${selectedFinalists
     (finalist) => `[${finalist.candidateId}] ${finalist.candidate}
 System: ${finalist.system}
 Inputs: ${finalist.inputs}
+Assumption: ${finalist.assumption}
 Mechanism: ${finalist.mechanism}
 Constraints: ${finalist.constraints}
 Incentives: ${finalist.incentives}
 Why it persists: ${finalist.whyItPersists}
 Failure modes: ${finalist.failureModes}
 Test or falsifier: ${finalist.testOrFalsifier}
+Measurement plan: ${finalist.measurementPlan}
+Competitive moat: ${finalist.competitiveMoat}
+Execution barrier: ${finalist.executionBarrier}
 Advanced because: ${finalist.advancedBecause}`
   )
   .join("\n\n")}
@@ -1769,11 +2224,12 @@ ${summarizeVerificationPacket(verificationPacket)}
 Additional guidance:
 - Keep the answer tight and user-facing.
 - Surface uncertainty only where the verification packet says plausible_but_unverified.
+- ${explicitNoSecondWinner ? "State clearly that no second candidate cleared verification." : "Return exactly the surviving winners."}
 - Never present contradicted finalists as winners unless there are no viable alternatives.`,
       },
     ],
     {
-      maxTokens: rigor === "rigorous" ? 1_650 : 1_300,
+      maxTokens: rigor === "rigorous" ? 1_800 : 1_450,
       temperature: 0.15,
       timeoutMs: FINALIZE_TIMEOUT_MS,
       reasoning: {
@@ -1785,6 +2241,170 @@ Additional guidance:
 
   const parsed = parseJSON<Record<string, unknown>>(raw, {});
   return toNonEmptyString(parsed.answer) || raw.trim();
+}
+
+function buildVerifierFeedback(args: {
+  selectedFinalists: ResearchFinalist[];
+  verificationPacket: ResearchVerificationPacketEntry[];
+}): ResearchRetryFeedback {
+  const problematicEntries = args.verificationPacket.filter(
+    (entry) => entry.verificationStatus !== "confirmed" || entry.goNoGoDecision !== "go"
+  );
+  const finalistMap = new Map(
+    args.selectedFinalists.map((finalist) => [finalist.candidateId, finalist])
+  );
+
+  return {
+    summary:
+      problematicEntries.length > 0
+        ? "The first winner set failed because one or more candidates could not clear measured verification."
+        : "The first winner set did not clear measured verification cleanly.",
+    failedAssumptions: uniqueStrings(
+      problematicEntries.map((entry) => entry.assumptionCheck),
+      5
+    ),
+    brokenMechanisms: uniqueStrings(
+      problematicEntries.map((entry) => entry.mechanismCheck),
+      5
+    ),
+    missingMeasurementPatterns: uniqueStrings(
+      problematicEntries.map(
+        (entry) => `${entry.measurementCheck} Threshold: ${entry.viabilityThreshold}`
+      ),
+      5
+    ),
+    moatExecutionMistakes: uniqueStrings(
+      problematicEntries.map(
+        (entry) =>
+          `${entry.competitiveMoatCheck} Execution: ${entry.executionFeasibilityCheck}`
+      ),
+      5
+    ),
+    disallowedWeakPatterns: uniqueStrings(
+      [
+        "Do not rely on analogy, authority, or trend language in place of mechanism.",
+        "Do not omit a concrete measurement plan or falsifier.",
+        "Do not claim durability without a credible moat or execution barrier.",
+        ...problematicEntries.flatMap((entry) => {
+          const finalist = finalistMap.get(entry.candidateId);
+          return finalist
+            ? [`Do not repeat the failed pattern behind ${finalist.candidate}.`]
+            : [];
+        }),
+      ],
+      6
+    ),
+  };
+}
+
+function buildFailClosedAnswer(args: {
+  query: string;
+  verificationPacket: ResearchVerificationPacketEntry[];
+  failClosedReason: string;
+}) {
+  const issueSummary =
+    args.verificationPacket.length > 0
+      ? args.verificationPacket
+          .map(
+            (entry) =>
+              `${entry.candidateId} ended at ${entry.verificationStatus} with ${entry.goNoGoDecision}.`
+          )
+          .join(" ")
+      : "No candidate cleared verification strongly enough to surface.";
+
+  return `No candidate cleared verification strongly enough to recommend action on "${args.query.trim() || "this prompt"}". ${args.failClosedReason}
+
+${issueSummary}`;
+}
+
+async function selectVerifiedWinners(args: {
+  messages: ChatMessage[];
+  frame: ResearchFrame;
+  finalists: ResearchFinalist[];
+  initialSelectedCandidateIds: string[];
+  rigor: Rigor;
+}) {
+  const { messages, frame, finalists, initialSelectedCandidateIds, rigor } = args;
+  const finalistMap = new Map(finalists.map((candidate) => [candidate.candidateId, candidate]));
+  const finalistOrder = finalists.map((candidate) => candidate.candidateId);
+  const verificationMap = new Map<string, ResearchVerificationPacketEntry>();
+
+  const selectedCandidateIds =
+    initialSelectedCandidateIds.length > 0
+      ? uniqueStrings(
+          initialSelectedCandidateIds.filter((candidateId) => finalistMap.has(candidateId)),
+          SELECTED_COUNT
+        )
+      : finalistOrder.slice(0, SELECTED_COUNT);
+
+  const verifyCandidateIds = async (candidateIds: string[]) => {
+    const finalistsToVerify = candidateIds
+      .map((candidateId) => finalistMap.get(candidateId))
+      .filter((candidate): candidate is ResearchFinalist => Boolean(candidate))
+      .filter((candidate) => !verificationMap.has(candidate.candidateId));
+
+    if (finalistsToVerify.length === 0) return;
+    const result = await runVerify({
+      messages,
+      frame,
+      finalists: finalistsToVerify,
+      rigor,
+    });
+
+    for (const entry of result.packet) {
+      verificationMap.set(entry.candidateId, entry);
+    }
+  };
+
+  await verifyCandidateIds(selectedCandidateIds);
+
+  const viableSelected: string[] = [];
+  for (const candidateId of selectedCandidateIds) {
+    const status = verificationMap.get(candidateId)?.verificationStatus;
+    if (status && status !== "contradicted" && !viableSelected.includes(candidateId)) {
+      viableSelected.push(candidateId);
+    }
+  }
+
+  if (viableSelected.length < SELECTED_COUNT) {
+    for (const candidateId of finalistOrder) {
+      if (viableSelected.includes(candidateId)) continue;
+      await verifyCandidateIds([candidateId]);
+      const status = verificationMap.get(candidateId)?.verificationStatus;
+      if (status && status !== "contradicted") {
+        viableSelected.push(candidateId);
+      }
+      if (viableSelected.length >= SELECTED_COUNT) break;
+    }
+  }
+
+  const verificationPacket = finalistOrder
+    .filter((candidateId) => verificationMap.has(candidateId))
+    .map((candidateId) => verificationMap.get(candidateId)!)
+    .filter(
+      (entry, index, entries) =>
+        entries.findIndex((item) => item.candidateId === entry.candidateId) === index
+    );
+
+  const verificationFallbackReason =
+    viableSelected.length >= SELECTED_COUNT
+      ? undefined
+      : viableSelected.length === 1
+        ? "Verification left only one non-contradicted winner after checking replacements."
+        : "Verification contradicted the full winner set and no replacement candidate cleared the same checks.";
+
+  return {
+    selectedCandidateIds: viableSelected.slice(0, SELECTED_COUNT),
+    verificationPacket,
+    verificationFallbackReason,
+    retryFeedback:
+      viableSelected.length >= SELECTED_COUNT
+        ? undefined
+        : buildVerifierFeedback({
+            selectedFinalists: finalists,
+            verificationPacket,
+          }),
+  };
 }
 
 export async function draftResearch(
@@ -1829,8 +2449,22 @@ export async function refineResearch(args: {
   await notifyProgress(onProgress, FRAME_STAGE);
   const frame = await runFrame(messages, rigor);
 
+  let retryOccurred = false;
+  let retryFeedback: ResearchRetryFeedback | undefined;
+  let failClosedReason: string | undefined;
+  let generatedCandidates: ResearchCandidate[] = [];
+  let consensus: EliminationConsensusResult = {
+    eliminationJudgments: [],
+    finalists: [],
+    rejected: [],
+    consensusSummary: "Research did not reach consensus.",
+  };
+  let selectedCandidateIds: string[] = [];
+  let verificationPacket: ResearchVerificationPacketEntry[] = [];
+  const fallbackReasons: string[] = [];
+
   await notifyProgress(onProgress, CANDIDATE_SWARM_STAGE);
-  const generatedCandidates = await runCandidateSwarm({ frame, rigor });
+  generatedCandidates = await runCandidateSwarm({ frame, rigor });
   if (generatedCandidates.length < CANDIDATE_MINIMUM) {
     const fallbackReason = `Only ${generatedCandidates.length} of ${AXIS_COUNT} candidate workers returned usable outputs, so Hydra stopped before elimination.`;
     return {
@@ -1844,18 +2478,20 @@ export async function refineResearch(args: {
           eliminationJudgments: [],
           finalists: [],
           rejected: [],
-          consensusSummary: "Candidate swarm did not reach the minimum viable field for elimination.",
+          consensusSummary:
+            "Candidate swarm did not reach the minimum viable field for elimination.",
           fallbackReason,
         },
         selectedCandidateIds: [],
         verificationPacket: [],
+        retryOccurred: false,
         fallbackReason,
       }),
     };
   }
 
   await notifyProgress(onProgress, ELIMINATION_SWARM_STAGE);
-  const consensus = await runEliminationSwarm({
+  consensus = await runEliminationSwarm({
     frame,
     candidates: generatedCandidates,
     rigor,
@@ -1875,13 +2511,14 @@ export async function refineResearch(args: {
         consensus,
         selectedCandidateIds: [],
         verificationPacket: [],
+        retryOccurred: false,
         fallbackReason,
       }),
     };
   }
 
   await notifyProgress(onProgress, SYNTHESIZE_STAGE);
-  const synthesized = await runSynthesize({
+  let synthesized = await runSynthesize({
     frame,
     finalists: consensus.finalists,
     rejected: consensus.rejected,
@@ -1891,168 +2528,160 @@ export async function refineResearch(args: {
   });
 
   await notifyProgress(onProgress, VERIFY_STAGE);
-  const finalistMap = new Map(
-    consensus.finalists.map((candidate) => [candidate.candidateId, candidate])
-  );
-  const finalistOrder = consensus.finalists.map((candidate) => candidate.candidateId);
-  const verificationMap = new Map<string, ResearchVerificationPacketEntry>();
+  let selection = await selectVerifiedWinners({
+    messages,
+    frame,
+    finalists: consensus.finalists,
+    initialSelectedCandidateIds: synthesized.selectedCandidateIds,
+    rigor,
+  });
 
-  let selectedCandidateIds =
-    synthesized.selectedCandidateIds.length > 0
-      ? [...synthesized.selectedCandidateIds]
-      : finalistOrder.slice(0, SELECTED_COUNT);
-
-  let changedSelection = false;
-  let verificationFallbackReason: string | undefined;
-
-  for (let attempt = 0; attempt < FINALIST_COUNT; attempt += 1) {
-    const missingVerificationIds = selectedCandidateIds.filter(
-      (candidateId) => !verificationMap.has(candidateId) && finalistMap.has(candidateId)
-    );
-
-    if (missingVerificationIds.length > 0) {
-      const packet = await runVerify({
-        frame,
-        finalists: missingVerificationIds
-          .map((candidateId) => finalistMap.get(candidateId))
-          .filter((candidate): candidate is ResearchFinalist => Boolean(candidate)),
-        rigor,
-      });
-
-      for (const entry of packet) {
-        verificationMap.set(entry.candidateId, entry);
-      }
-    }
-
-    const contradictedSelections = selectedCandidateIds.filter(
-      (candidateId) => verificationMap.get(candidateId)?.verificationStatus === "contradicted"
-    );
-
-    if (contradictedSelections.length === 0) break;
-
-    let replaced = false;
-    for (const contradictedId of contradictedSelections) {
-      const index = selectedCandidateIds.indexOf(contradictedId);
-      const replacement = finalistOrder.find(
-        (candidateId) =>
-          !selectedCandidateIds.includes(candidateId) &&
-          verificationMap.get(candidateId)?.verificationStatus !== "contradicted"
-      );
-
-      if (replacement) {
-        selectedCandidateIds[index] = replacement;
-        replaced = true;
-        changedSelection = true;
-        continue;
-      }
-
-      const unverifiedReplacement = finalistOrder.find(
-        (candidateId) => !selectedCandidateIds.includes(candidateId) && !verificationMap.has(candidateId)
-      );
-
-      if (unverifiedReplacement) {
-        selectedCandidateIds[index] = unverifiedReplacement;
-        replaced = true;
-        changedSelection = true;
-      }
-    }
-
-    if (!replaced) break;
+  if (consensus.fallbackReason) fallbackReasons.push(consensus.fallbackReason);
+  if (selection.verificationFallbackReason) {
+    fallbackReasons.push(selection.verificationFallbackReason);
   }
 
-  const finalMissingVerificationIds = selectedCandidateIds.filter(
-    (candidateId) => !verificationMap.has(candidateId) && finalistMap.has(candidateId)
-  );
+  selectedCandidateIds = selection.selectedCandidateIds;
+  verificationPacket = selection.verificationPacket;
 
-  if (finalMissingVerificationIds.length > 0) {
-    const packet = await runVerify({
+  if (selectedCandidateIds.length < SELECTED_COUNT && selection.retryFeedback) {
+    retryOccurred = true;
+    retryFeedback = selection.retryFeedback;
+
+    generatedCandidates = await runCandidateSwarm({
       frame,
-      finalists: finalMissingVerificationIds
-        .map((candidateId) => finalistMap.get(candidateId))
-        .filter((candidate): candidate is ResearchFinalist => Boolean(candidate)),
+      rigor,
+      verifierFeedback: retryFeedback,
+    });
+
+    if (generatedCandidates.length < CANDIDATE_MINIMUM) {
+      const fallbackReason = `Only ${generatedCandidates.length} of ${AXIS_COUNT} retry candidate workers returned usable outputs after verifier feedback, so Hydra stopped before elimination.`;
+      return {
+        content: seed,
+        status: "fallback",
+        needsFollowup: false,
+        trace: buildTrace({
+          frame,
+          generatedCandidates,
+          consensus: {
+            eliminationJudgments: [],
+            finalists: [],
+            rejected: [],
+            consensusSummary:
+              "Retry candidate swarm did not reach the minimum viable field for elimination.",
+            fallbackReason,
+          },
+          selectedCandidateIds: [],
+          verificationPacket,
+          retryOccurred,
+          retryFeedback,
+          fallbackReason,
+        }),
+      };
+    }
+
+    consensus = await runEliminationSwarm({
+      frame,
+      candidates: generatedCandidates,
       rigor,
     });
 
-    for (const entry of packet) {
-      verificationMap.set(entry.candidateId, entry);
-    }
-  }
+    if (consensus.fallbackReason) fallbackReasons.push(consensus.fallbackReason);
 
-  const verifiedPreferred = selectedCandidateIds.filter(
-    (candidateId) => verificationMap.get(candidateId)?.verificationStatus !== "contradicted"
-  );
-
-  if (verifiedPreferred.length < SELECTED_COUNT) {
-    for (const candidateId of finalistOrder) {
-      if (verifiedPreferred.includes(candidateId)) continue;
-      if (!verificationMap.has(candidateId)) {
-        const packet = await runVerify({
+    if (consensus.finalists.length === 0) {
+      const fallbackReason =
+        consensus.fallbackReason ||
+        "The retry elimination swarm did not produce any usable finalists.";
+      return {
+        content: seed,
+        status: "fallback",
+        needsFollowup: false,
+        trace: buildTrace({
           frame,
-          finalists: finalistMap.has(candidateId) ? [finalistMap.get(candidateId)!] : [],
-          rigor,
-        });
-        for (const entry of packet) {
-          verificationMap.set(entry.candidateId, entry);
-        }
-      }
-
-      if (verificationMap.get(candidateId)?.verificationStatus !== "contradicted") {
-        verifiedPreferred.push(candidateId);
-      }
-
-      if (verifiedPreferred.length >= SELECTED_COUNT) break;
+          generatedCandidates,
+          consensus,
+          selectedCandidateIds: [],
+          verificationPacket,
+          retryOccurred,
+          retryFeedback,
+          fallbackReason,
+        }),
+      };
     }
+
+    synthesized = await runSynthesize({
+      frame,
+      finalists: consensus.finalists,
+      rejected: consensus.rejected,
+      consensusSummary: consensus.consensusSummary,
+      rigor,
+      fallbackReason: consensus.fallbackReason,
+    });
+
+    selection = await selectVerifiedWinners({
+      messages,
+      frame,
+      finalists: consensus.finalists,
+      initialSelectedCandidateIds: synthesized.selectedCandidateIds,
+      rigor,
+    });
+
+    if (selection.verificationFallbackReason) {
+      fallbackReasons.push(selection.verificationFallbackReason);
+    }
+
+    selectedCandidateIds = selection.selectedCandidateIds;
+    verificationPacket = selection.verificationPacket;
   }
 
-  if (verifiedPreferred.length >= SELECTED_COUNT) {
-    selectedCandidateIds = verifiedPreferred.slice(0, SELECTED_COUNT);
-  } else if (
-    selectedCandidateIds.some(
-      (candidateId) => verificationMap.get(candidateId)?.verificationStatus === "contradicted"
-    )
-  ) {
-    verificationFallbackReason =
-      "Verification contradicted one or more selected winners and Hydra could not fully replace them with non-contradicted finalists.";
-  }
+  if (selectedCandidateIds.length === 0) {
+    failClosedReason =
+      "Research failed closed because the winner set could not survive measured verification even after one retry.";
 
-  const verificationPacket = finalistOrder
-    .filter((candidateId) => verificationMap.has(candidateId))
-    .map((candidateId) => verificationMap.get(candidateId)!)
-    .filter(
-      (entry, index, entries) =>
-        entries.findIndex((item) => item.candidateId === entry.candidateId) === index
-    );
+    const finalAnswer = buildFailClosedAnswer({
+      query,
+      verificationPacket,
+      failClosedReason,
+    });
 
-  const needsFinalize =
-    changedSelection ||
-    verificationPacket.some((entry) => entry.verificationStatus !== "confirmed");
-
-  const calibratedAnswer = needsFinalize
-    ? await runFinalize({
+    return {
+      content: finalAnswer || seed,
+      status: finalAnswer ? "final" : "fallback",
+      needsFollowup: false,
+      trace: buildTrace({
         frame,
-        finalists: consensus.finalists,
+        generatedCandidates,
+        consensus,
         selectedCandidateIds,
         verificationPacket,
-        rigor,
-      })
-    : synthesized.answer;
+        retryOccurred,
+        retryFeedback,
+        failClosedReason,
+        fallbackReason: fallbackReasons.join(" ") || undefined,
+      }),
+    };
+  }
 
-  const finalAnswer =
-    calibratedAnswer ||
+  const explicitNoSecondWinner = selectedCandidateIds.length < SELECTED_COUNT;
+  const calibratedAnswer =
+    (await runFinalize({
+      frame,
+      finalists: consensus.finalists,
+      selectedCandidateIds,
+      verificationPacket,
+      rigor,
+      explicitNoSecondWinner,
+    })) ||
     buildVerificationFallbackAnswer({
       finalists: consensus.finalists,
       selectedCandidateIds,
       verificationPacket,
-    }) ||
-    seed;
-
-  const fallbackReason = [consensus.fallbackReason, verificationFallbackReason]
-    .filter(Boolean)
-    .join(" ");
+      explicitNoSecondWinner,
+    });
 
   return {
-    content: finalAnswer,
-    status: finalAnswer ? "final" : "fallback",
+    content: calibratedAnswer || seed,
+    status: calibratedAnswer ? "final" : "fallback",
     needsFollowup: false,
     trace: buildTrace({
       frame,
@@ -2060,7 +2689,10 @@ export async function refineResearch(args: {
       consensus,
       selectedCandidateIds,
       verificationPacket,
-      fallbackReason: fallbackReason || undefined,
+      retryOccurred,
+      retryFeedback,
+      ...(failClosedReason ? { failClosedReason } : {}),
+      fallbackReason: fallbackReasons.join(" ") || undefined,
     }),
   };
 }

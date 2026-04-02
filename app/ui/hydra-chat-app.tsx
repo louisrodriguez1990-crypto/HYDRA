@@ -152,12 +152,16 @@ interface MessageResearchReasoningSchema {
   axis: string;
   system: string;
   inputs: string;
+  assumption: string;
   mechanism: string;
   constraints: string;
   incentives: string;
   whyItPersists: string;
   failureModes: string;
   testOrFalsifier: string;
+  measurementPlan: string;
+  competitiveMoat: string;
+  executionBarrier: string;
   confidence: string;
 }
 
@@ -200,12 +204,16 @@ interface MessageResearchCandidate {
   candidate: string;
   system: string;
   inputs: string;
+  assumption: string;
   mechanism: string;
   constraints: string;
   incentives: string;
   whyItPersists: string;
   failureModes: string;
   testOrFalsifier: string;
+  measurementPlan: string;
+  competitiveMoat: string;
+  executionBarrier: string;
   confidence: MessageResearchCandidateConfidence;
 }
 
@@ -236,12 +244,16 @@ interface MessageResearchFinalist {
   candidate: string;
   system: string;
   inputs: string;
+  assumption: string;
   mechanism: string;
   constraints: string;
   incentives: string;
   whyItPersists: string;
   failureModes: string;
   testOrFalsifier: string;
+  measurementPlan: string;
+  competitiveMoat: string;
+  executionBarrier: string;
   totalScore: number;
   supportCount: number;
   averageRank: number;
@@ -264,15 +276,34 @@ type MessageResearchVerificationStatus =
   | "plausible_but_unverified"
   | "contradicted";
 
+type MessageResearchGoNoGoDecision = "go" | "watch" | "no-go";
+
 interface MessageResearchVerificationPacketEntry {
   candidateId: string;
+  assumptionCheck: string;
   mechanismCheck: string;
+  measurementCheck: string;
+  evidenceSummary: string;
   executionFeasibilityCheck: string;
   constraintCheck: string;
   persistenceCheck: string;
   failureModeCheck: string;
+  competitiveMoatCheck: string;
   legalCompliancePolicyFlag: string;
+  falsificationCriterion: string;
+  viabilityThreshold: string;
+  goNoGoDecision: MessageResearchGoNoGoDecision;
   verificationStatus: MessageResearchVerificationStatus;
+  verificationSources: string[];
+}
+
+interface MessageResearchRetryFeedback {
+  summary: string;
+  failedAssumptions: string[];
+  brokenMechanisms: string[];
+  missingMeasurementPatterns: string[];
+  moatExecutionMistakes: string[];
+  disallowedWeakPatterns: string[];
 }
 
 interface MessageResearchTrace {
@@ -286,6 +317,9 @@ interface MessageResearchTrace {
   selectedCandidateIds: string[];
   consensusSummary: string;
   verificationPacket: MessageResearchVerificationPacketEntry[];
+  retryOccurred: boolean;
+  retryFeedback?: MessageResearchRetryFeedback;
+  failClosedReason?: string;
   fallbackReason?: string;
 }
 
@@ -525,12 +559,28 @@ function parseResearchFrame(value: unknown): MessageResearchFrame | undefined {
             axis: schema.axis,
             system: schema.system,
             inputs: schema.inputs,
+            assumption:
+              typeof schema.assumption === "string"
+                ? schema.assumption
+                : "The key claim about reality that must hold.",
             mechanism: schema.mechanism,
             constraints: schema.constraints,
             incentives: schema.incentives,
             whyItPersists: schema.whyItPersists,
             failureModes: schema.failureModes,
             testOrFalsifier: schema.testOrFalsifier,
+            measurementPlan:
+              typeof schema.measurementPlan === "string"
+                ? schema.measurementPlan
+                : "What evidence or measurement would validate the claim.",
+            competitiveMoat:
+              typeof schema.competitiveMoat === "string"
+                ? schema.competitiveMoat
+                : "Why others do not or cannot compress the edge immediately.",
+            executionBarrier:
+              typeof schema.executionBarrier === "string"
+                ? schema.executionBarrier
+                : "What practical barrier makes execution hard in reality.",
             confidence: schema.confidence,
           } satisfies MessageResearchReasoningSchema;
         })()
@@ -742,12 +792,28 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
               candidate: item.candidate,
               system: item.system,
               inputs: item.inputs,
+              assumption:
+                typeof item.assumption === "string"
+                  ? item.assumption
+                  : "No explicit assumption was captured.",
               mechanism: item.mechanism,
               constraints: item.constraints,
               incentives: item.incentives,
               whyItPersists: item.whyItPersists,
               failureModes: item.failureModes,
               testOrFalsifier: item.testOrFalsifier,
+              measurementPlan:
+                typeof item.measurementPlan === "string"
+                  ? item.measurementPlan
+                  : "No explicit measurement plan was captured.",
+              competitiveMoat:
+                typeof item.competitiveMoat === "string"
+                  ? item.competitiveMoat
+                  : "No explicit competitive moat was captured.",
+              executionBarrier:
+                typeof item.executionBarrier === "string"
+                  ? item.executionBarrier
+                  : "No explicit execution barrier was captured.",
               confidence: item.confidence,
             } satisfies MessageResearchCandidate;
           })
@@ -866,12 +932,28 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
               candidate: item.candidate,
               system: item.system,
               inputs: item.inputs,
+              assumption:
+                typeof item.assumption === "string"
+                  ? item.assumption
+                  : "No explicit assumption was captured.",
               mechanism: item.mechanism,
               constraints: item.constraints,
               incentives: item.incentives,
               whyItPersists: item.whyItPersists,
               failureModes: item.failureModes,
               testOrFalsifier: item.testOrFalsifier,
+              measurementPlan:
+                typeof item.measurementPlan === "string"
+                  ? item.measurementPlan
+                  : "No explicit measurement plan was captured.",
+              competitiveMoat:
+                typeof item.competitiveMoat === "string"
+                  ? item.competitiveMoat
+                  : "No explicit competitive moat was captured.",
+              executionBarrier:
+                typeof item.executionBarrier === "string"
+                  ? item.executionBarrier
+                  : "No explicit execution barrier was captured.",
               totalScore: item.totalScore,
               supportCount: item.supportCount,
               averageRank: item.averageRank,
@@ -933,17 +1015,73 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
 
             return {
               candidateId: item.candidateId,
+              assumptionCheck:
+                typeof item.assumptionCheck === "string"
+                  ? item.assumptionCheck
+                  : "No explicit assumption check was captured.",
               mechanismCheck: item.mechanismCheck,
+              measurementCheck:
+                typeof item.measurementCheck === "string"
+                  ? item.measurementCheck
+                  : "No explicit measurement check was captured.",
+              evidenceSummary:
+                typeof item.evidenceSummary === "string"
+                  ? item.evidenceSummary
+                  : "No explicit evidence summary was captured.",
               executionFeasibilityCheck: item.executionFeasibilityCheck,
               constraintCheck: item.constraintCheck,
               persistenceCheck: item.persistenceCheck,
               failureModeCheck: item.failureModeCheck,
+              competitiveMoatCheck:
+                typeof item.competitiveMoatCheck === "string"
+                  ? item.competitiveMoatCheck
+                  : "No explicit competitive moat check was captured.",
               legalCompliancePolicyFlag: item.legalCompliancePolicyFlag,
+              falsificationCriterion:
+                typeof item.falsificationCriterion === "string"
+                  ? item.falsificationCriterion
+                  : "No explicit falsifier was captured.",
+              viabilityThreshold:
+                typeof item.viabilityThreshold === "string"
+                  ? item.viabilityThreshold
+                  : "No explicit threshold was captured.",
+              goNoGoDecision:
+                item.goNoGoDecision === "go" ||
+                item.goNoGoDecision === "watch" ||
+                item.goNoGoDecision === "no-go"
+                  ? item.goNoGoDecision
+                  : "watch",
               verificationStatus: item.verificationStatus,
+              verificationSources: Array.isArray(item.verificationSources)
+                ? item.verificationSources.filter(
+                    (source): source is string => typeof source === "string"
+                  )
+                : [],
             } satisfies MessageResearchVerificationPacketEntry;
           })
           .filter((entry): entry is MessageResearchVerificationPacketEntry => entry !== null)
       : [];
+
+    const retryFeedback =
+      typeof record.retryFeedback === "object" && record.retryFeedback !== null
+        ? (() => {
+            const item = record.retryFeedback as Record<string, unknown>;
+            if (typeof item.summary !== "string") return undefined;
+
+            return {
+              summary: item.summary,
+              failedAssumptions: normalizeTraceStringArray(item.failedAssumptions),
+              brokenMechanisms: normalizeTraceStringArray(item.brokenMechanisms),
+              missingMeasurementPatterns: normalizeTraceStringArray(
+                item.missingMeasurementPatterns
+              ),
+              moatExecutionMistakes: normalizeTraceStringArray(item.moatExecutionMistakes),
+              disallowedWeakPatterns: normalizeTraceStringArray(
+                item.disallowedWeakPatterns
+              ),
+            } satisfies MessageResearchRetryFeedback;
+          })()
+        : undefined;
 
     if (
       typeof record.consensusSummary !== "string" ||
@@ -964,6 +1102,11 @@ function parseMessageTrace(value: unknown): MessageTrace | undefined {
       selectedCandidateIds: record.selectedCandidateIds as string[],
       consensusSummary: record.consensusSummary,
       verificationPacket,
+      retryOccurred: record.retryOccurred === true,
+      ...(retryFeedback ? { retryFeedback } : {}),
+      ...(typeof record.failClosedReason === "string"
+        ? { failClosedReason: record.failClosedReason }
+        : {}),
       ...(typeof record.fallbackReason === "string"
         ? { fallbackReason: record.fallbackReason }
         : {}),
@@ -3249,6 +3392,12 @@ export default function HydraChatApp() {
                                                 )}
                                               </li>
                                               <li>
+                                                Schema `assumption`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema.assumption
+                                                )}
+                                              </li>
+                                              <li>
                                                 Schema `mechanism`:{" "}
                                                 {summarizeTraceAnswer(
                                                   trace.frame.requiredReasoningSchema.mechanism
@@ -3283,6 +3432,27 @@ export default function HydraChatApp() {
                                                 {summarizeTraceAnswer(
                                                   trace.frame.requiredReasoningSchema
                                                     .testOrFalsifier
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `measurementPlan`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema
+                                                    .measurementPlan
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `competitiveMoat`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema
+                                                    .competitiveMoat
+                                                )}
+                                              </li>
+                                              <li>
+                                                Schema `executionBarrier`:{" "}
+                                                {summarizeTraceAnswer(
+                                                  trace.frame.requiredReasoningSchema
+                                                    .executionBarrier
                                                 )}
                                               </li>
                                             </ul>
@@ -3380,6 +3550,10 @@ export default function HydraChatApp() {
                                                         Inputs: {summarizeTraceAnswer(candidate.inputs)}
                                                       </p>
                                                       <p className="hydra-trace-answer">
+                                                        Assumption:{" "}
+                                                        {summarizeTraceAnswer(candidate.assumption)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
                                                         Mechanism: {summarizeTraceAnswer(candidate.mechanism)}
                                                       </p>
                                                       <p className="hydra-trace-answer">
@@ -3403,6 +3577,18 @@ export default function HydraChatApp() {
                                                       <p className="hydra-trace-answer">
                                                         Test or falsifier:{" "}
                                                         {summarizeTraceAnswer(candidate.testOrFalsifier)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Measurement plan:{" "}
+                                                        {summarizeTraceAnswer(candidate.measurementPlan)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Competitive moat:{" "}
+                                                        {summarizeTraceAnswer(candidate.competitiveMoat)}
+                                                      </p>
+                                                      <p className="hydra-trace-answer">
+                                                        Execution barrier:{" "}
+                                                        {summarizeTraceAnswer(candidate.executionBarrier)}
                                                       </p>
                                                     </div>
                                                   ))}
@@ -3531,6 +3717,10 @@ export default function HydraChatApp() {
                                                   Inputs: {summarizeTraceAnswer(candidate.inputs)}
                                                 </p>
                                                 <p className="hydra-trace-answer">
+                                                  Assumption:{" "}
+                                                  {summarizeTraceAnswer(candidate.assumption)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
                                                   Mechanism: {summarizeTraceAnswer(candidate.mechanism)}
                                                 </p>
                                                 <p className="hydra-trace-answer">
@@ -3552,6 +3742,18 @@ export default function HydraChatApp() {
                                                 <p className="hydra-trace-answer">
                                                   Test or falsifier:{" "}
                                                   {summarizeTraceAnswer(candidate.testOrFalsifier)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Measurement plan:{" "}
+                                                  {summarizeTraceAnswer(candidate.measurementPlan)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Competitive moat:{" "}
+                                                  {summarizeTraceAnswer(candidate.competitiveMoat)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Execution barrier:{" "}
+                                                  {summarizeTraceAnswer(candidate.executionBarrier)}
                                                 </p>
                                                 <p className="hydra-trace-answer">
                                                   Why advanced:{" "}
@@ -3586,10 +3788,25 @@ export default function HydraChatApp() {
                                                   <span className="hydra-badge">
                                                     {entry.verificationStatus}
                                                   </span>
+                                                  <span className="hydra-badge">
+                                                    {entry.goNoGoDecision}
+                                                  </span>
                                                 </div>
+                                                <p className="hydra-trace-answer">
+                                                  Assumption check:{" "}
+                                                  {summarizeTraceAnswer(entry.assumptionCheck)}
+                                                </p>
                                                 <p className="hydra-trace-answer">
                                                   Mechanism check:{" "}
                                                   {summarizeTraceAnswer(entry.mechanismCheck)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Measurement check:{" "}
+                                                  {summarizeTraceAnswer(entry.measurementCheck)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Evidence summary:{" "}
+                                                  {summarizeTraceAnswer(entry.evidenceSummary)}
                                                 </p>
                                                 <p className="hydra-trace-answer">
                                                   Execution feasibility:{" "}
@@ -3610,11 +3827,40 @@ export default function HydraChatApp() {
                                                   {summarizeTraceAnswer(entry.failureModeCheck)}
                                                 </p>
                                                 <p className="hydra-trace-answer">
+                                                  Competitive moat check:{" "}
+                                                  {summarizeTraceAnswer(
+                                                    entry.competitiveMoatCheck
+                                                  )}
+                                                </p>
+                                                <p className="hydra-trace-answer">
                                                   Legal/compliance/policy:{" "}
                                                   {summarizeTraceAnswer(
                                                     entry.legalCompliancePolicyFlag
                                                   )}
                                                 </p>
+                                                <p className="hydra-trace-answer">
+                                                  Threshold:{" "}
+                                                  {summarizeTraceAnswer(entry.viabilityThreshold)}
+                                                </p>
+                                                <p className="hydra-trace-answer">
+                                                  Falsifier:{" "}
+                                                  {summarizeTraceAnswer(
+                                                    entry.falsificationCriterion
+                                                  )}
+                                                </p>
+                                                {entry.verificationSources.length > 0 && (
+                                                  <ul className="hydra-trace-list">
+                                                    {entry.verificationSources.map(
+                                                      (source, index) => (
+                                                        <li
+                                                          key={`${message.id}-research-verify-source-${entry.candidateId}-${index}`}
+                                                        >
+                                                          {summarizeTraceAnswer(source)}
+                                                        </li>
+                                                      )
+                                                    )}
+                                                  </ul>
+                                                )}
                                               </div>
                                             ))}
                                           </div>
@@ -3633,6 +3879,95 @@ export default function HydraChatApp() {
                                                 </span>
                                               ))}
                                             </div>
+                                          </div>
+                                        )}
+
+                                        {trace.retryOccurred && trace.retryFeedback && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">
+                                              Retry feedback
+                                            </p>
+                                            <p className="hydra-trace-answer">
+                                              {summarizeTraceAnswer(trace.retryFeedback.summary)}
+                                            </p>
+                                            {trace.retryFeedback.failedAssumptions.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.retryFeedback.failedAssumptions.map(
+                                                  (item, index) => (
+                                                    <li
+                                                      key={`${message.id}-research-retry-assumption-${index}`}
+                                                    >
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {trace.retryFeedback.brokenMechanisms.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.retryFeedback.brokenMechanisms.map(
+                                                  (item, index) => (
+                                                    <li
+                                                      key={`${message.id}-research-retry-mechanism-${index}`}
+                                                    >
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {trace.retryFeedback.missingMeasurementPatterns
+                                              .length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.retryFeedback.missingMeasurementPatterns.map(
+                                                  (item, index) => (
+                                                    <li
+                                                      key={`${message.id}-research-retry-measurement-${index}`}
+                                                    >
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {trace.retryFeedback.moatExecutionMistakes.length > 0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.retryFeedback.moatExecutionMistakes.map(
+                                                  (item, index) => (
+                                                    <li
+                                                      key={`${message.id}-research-retry-moat-${index}`}
+                                                    >
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                            {trace.retryFeedback.disallowedWeakPatterns.length >
+                                              0 && (
+                                              <ul className="hydra-trace-list">
+                                                {trace.retryFeedback.disallowedWeakPatterns.map(
+                                                  (item, index) => (
+                                                    <li
+                                                      key={`${message.id}-research-retry-pattern-${index}`}
+                                                    >
+                                                      {summarizeTraceAnswer(item)}
+                                                    </li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            )}
+                                          </div>
+                                        )}
+
+                                        {trace.failClosedReason && (
+                                          <div className="hydra-trace-section">
+                                            <p className="hydra-trace-section-title">
+                                              Fail-closed reason
+                                            </p>
+                                            <p className="hydra-trace-answer">
+                                              {summarizeTraceAnswer(trace.failClosedReason)}
+                                            </p>
                                           </div>
                                         )}
 
