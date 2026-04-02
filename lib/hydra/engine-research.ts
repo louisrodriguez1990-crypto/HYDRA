@@ -235,34 +235,6 @@ Output ONLY JSON:
   "answer": "..."
 }`;
 
-const FINALIZE_PROMPT = `You are packaging already-selected finalists after verification.
-
-Your job is to:
-- preserve the selected winners exactly
-- explain why they survived better than the other finalists
-- keep the explanation mechanism-first and readable
-- mention calibration or uncertainty only when the verification packet requires it
-- include compact execution guidance lines for each winner
-
-Do not change the selectedCandidateIds.
-Do not invent new candidates.
-Do not paper over contradictions.
-
-Output ONLY JSON:
-{
-  "answer": "..."
-}
-
-Rules:
-- For each surviving winner, include:
-  - mechanism
-  - why it survived
-  - Decision: Go | Watch | No-Go
-  - Threshold: ...
-  - Falsifier: ...
-- If only one candidate survived verification, say explicitly that no second candidate cleared verification.
-- Keep contradicted candidates out of the main answer unless no alternative exists.`;
-
 const VERIFY_PROMPT = `You are calibrating already-selected finalists.
 
 Do not choose new candidates.
@@ -309,7 +281,6 @@ const CANDIDATE_SWARM_TIMEOUT_MS = 18_000;
 const ELIMINATION_SWARM_TIMEOUT_MS = 20_000;
 const SYNTHESIZE_TIMEOUT_MS = 22_000;
 const VERIFY_TIMEOUT_MS = 18_000;
-const FINALIZE_TIMEOUT_MS = 18_000;
 
 const ELIMINATION_JUDGES = [
   {
@@ -2132,18 +2103,63 @@ Additional guidance:
   };
 }
 
-function summarizeVerificationPacket(packet: ResearchVerificationPacketEntry[]) {
-  if (packet.length === 0) return "No verification packet was captured.";
-  return packet
-    .map(
-      (entry) =>
-        `${entry.candidateId}: ${entry.verificationStatus}; decision ${entry.goNoGoDecision}; threshold ${entry.viabilityThreshold}; falsifier ${entry.falsificationCriterion}`
-    )
-    .join("\n");
-}
-
 function formatDecisionLabel(decision: ResearchGoNoGoDecision) {
   return decision === "no-go" ? "No-Go" : decision === "go" ? "Go" : "Watch";
+}
+
+function sanitizeResearchUserText(value: string) {
+  return value
+    .replace(/\[(A\d+)\]\s*/g, "")
+    .replace(/\bA\d+\b/g, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .trim();
+}
+
+function firstSentence(value: string, fallback: string) {
+  const sanitized = sanitizeResearchUserText(value);
+  if (!sanitized) return fallback;
+  const match = sanitized.match(/.+?[.!?](?:\s|$)/);
+  return match?.[0]?.trim() || sanitized;
+}
+
+function softenUnverifiedLine(value: string, fallback: string) {
+  const sanitized = sanitizeResearchUserText(value || fallback);
+  if (!sanitized) return sanitizeResearchUserText(fallback);
+
+  return sanitized
+    .replace(/[$€£]\s?\d[\d,.]*(?:\s?(?:[kKmMbB]|million|billion))?/g, "meaningful capital")
+    .replace(/\b\d+(?:\.\d+)?\s*(?:-|to)\s*\d+(?:\.\d+)?%/g, "a meaningful spread")
+    .replace(/\b\d+(?:\.\d+)?%/g, "a measurable threshold")
+    .replace(/[<>]=?\s*\d+(?:\.\d+)?%?/g, "the required threshold")
+    .replace(/\b(?:IRS|IRC|Sec(?:tion)?|§)\s*[A-Za-z0-9()./_-]+\b/gi, "a cited regulatory constraint");
+}
+
+function formatThresholdForUser(
+  verification: ResearchVerificationPacketEntry | undefined,
+  candidate: ResearchFinalist
+) {
+  if (verification?.verificationStatus === "confirmed") {
+    return sanitizeResearchUserText(
+      verification.viabilityThreshold || candidate.measurementPlan || "Grounded threshold not captured."
+    );
+  }
+
+  return `Not grounded yet. Validate with: ${softenUnverifiedLine(
+    candidate.measurementPlan,
+    "a live measurement plan tied to the core mechanism"
+  )}`;
+}
+
+function formatFalsifierForUser(
+  verification: ResearchVerificationPacketEntry | undefined,
+  candidate: ResearchFinalist
+) {
+  const source = verification?.falsificationCriterion || candidate.testOrFalsifier;
+  return softenUnverifiedLine(
+    source,
+    "If the measurement plan fails to support the mechanism, reject the idea."
+  );
 }
 
 function buildVerificationFallbackAnswer(args: {
@@ -2165,18 +2181,37 @@ function buildVerificationFallbackAnswer(args: {
 
   const winnerLines = selected.map((candidate, index) => {
     const verification = verificationMap.get(candidate.candidateId);
-    return `${index + 1}. ${candidate.candidate}
-Mechanism: ${candidate.mechanism}
-Why it survived: ${candidate.advancedBecause}
+    const title = sanitizeResearchUserText(candidate.candidate) || `Winner ${index + 1}`;
+    const mechanism =
+      verification?.verificationStatus === "confirmed"
+        ? sanitizeResearchUserText(candidate.mechanism)
+        : firstSentence(
+            candidate.mechanism,
+            "The mechanism still needs live validation before it should be treated as executable."
+          );
+    const whyItSurvived = firstSentence(
+      candidate.advancedBecause,
+      "It survived because it kept more of the mechanism and constraint story intact than the rest of the field."
+    );
+    return `${index + 1}. ${title}
+Mechanism: ${mechanism}
+Why it survived: ${whyItSurvived}
 Decision: ${formatDecisionLabel(verification?.goNoGoDecision ?? "watch")}
-Threshold: ${verification?.viabilityThreshold || candidate.measurementPlan}
-Falsifier: ${verification?.falsificationCriterion || candidate.testOrFalsifier}`;
+Threshold: ${formatThresholdForUser(verification, candidate)}
+Falsifier: ${formatFalsifierForUser(verification, candidate)}`;
   });
 
   const otherLine =
     others.length > 0
       ? `Other finalists were weaker because ${others
-          .map((candidate) => `${candidate.candidateId} carried ${candidate.mainObjections[0] || "more unresolved objections"}`)
+          .map((candidate) => {
+            const title = sanitizeResearchUserText(candidate.candidate) || "another finalist";
+            const objection = firstSentence(
+              candidate.mainObjections[0] || "",
+              "it carried more unresolved objections."
+            );
+            return `${title} carried ${objection}`;
+          })
           .join("; ")}.`
       : "No other finalists were available for contrast.";
 
@@ -2184,7 +2219,15 @@ Falsifier: ${verification?.falsificationCriterion || candidate.testOrFalsifier}`
     ? "No second candidate cleared verification strongly enough to surface as a winner."
     : "";
 
-  return [winnerLines.join("\n\n"), singleWinnerLine, otherLine].filter(Boolean).join("\n\n");
+  const calibrationLine = args.verificationPacket.some(
+    (entry) => entry.verificationStatus === "plausible_but_unverified"
+  )
+    ? "These winners are still hypotheses under validation, not execution-ready recommendations."
+    : "";
+
+  return [calibrationLine, winnerLines.join("\n\n"), singleWinnerLine, otherLine]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 async function runFinalize(args: {
@@ -2212,66 +2255,15 @@ async function runFinalize(args: {
   );
 
   if (selectedFinalists.length === 0) return "";
-
-  const raw = await call(
-    RESEARCH_MODELS.synthesize,
-    [
-      { role: "system", content: FINALIZE_PROMPT },
-      {
-        role: "user",
-        content: `Framing object:
-${formatFrame(frame)}
-
-Selected finalists:
-${selectedFinalists
-  .map(
-    (finalist) => `[${finalist.candidateId}] ${finalist.candidate}
-System: ${finalist.system}
-Inputs: ${finalist.inputs}
-Assumption: ${finalist.assumption}
-Mechanism: ${finalist.mechanism}
-Constraints: ${finalist.constraints}
-Incentives: ${finalist.incentives}
-Why it persists: ${finalist.whyItPersists}
-Failure modes: ${finalist.failureModes}
-Test or falsifier: ${finalist.testOrFalsifier}
-Measurement plan: ${finalist.measurementPlan}
-Competitive moat: ${finalist.competitiveMoat}
-Execution barrier: ${finalist.executionBarrier}
-Advanced because: ${finalist.advancedBecause}`
-  )
-  .join("\n\n")}
-
-Other finalists:
-${otherFinalists
-  .map(
-    (finalist) => `[${finalist.candidateId}] ${finalist.candidate} | weaker because: ${finalist.mainObjections.join(" | ") || "more unresolved objections"}`
-  )
-  .join("\n") || "None"}
-
-Verification packet:
-${summarizeVerificationPacket(verificationPacket)}
-
-Additional guidance:
-- Keep the answer tight and user-facing.
-- Surface uncertainty only where the verification packet says plausible_but_unverified.
-- ${explicitNoSecondWinner ? "State clearly that no second candidate cleared verification." : "Return exactly the surviving winners."}
-- Never present contradicted finalists as winners unless there are no viable alternatives.`,
-      },
-    ],
-    {
-      maxTokens: rigor === "rigorous" ? 1_800 : 1_450,
-      temperature: 0.15,
-      timeoutMs: FINALIZE_TIMEOUT_MS,
-      reasoning: {
-        effort: rigor === "rigorous" ? "low" : "minimal",
-        exclude: true,
-      },
-    }
-  );
-
-  const parsed = parseJSON<Record<string, unknown>>(raw, {});
-  return toNonEmptyString(parsed.answer) || raw.trim();
+  void frame;
+  void rigor;
+  void otherFinalists;
+  return buildVerificationFallbackAnswer({
+    finalists,
+    selectedCandidateIds,
+    verificationPacket,
+    explicitNoSecondWinner,
+  });
 }
 
 function buildVerifierFeedback(args: {
