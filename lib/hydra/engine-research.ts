@@ -259,8 +259,8 @@ Rules:
 - Use "contradicted" when the mechanism, constraints, persistence, or failure surface materially breaks.`;
 
 const FRAME_TIMEOUT_MS = 20_000;
-const CANDIDATE_SWARM_TIMEOUT_MS = 14_000;
-const ELIMINATION_SWARM_TIMEOUT_MS = 16_000;
+const CANDIDATE_SWARM_TIMEOUT_MS = 30_000;
+const ELIMINATION_SWARM_TIMEOUT_MS = 32_000;
 const SYNTHESIZE_TIMEOUT_MS = 22_000;
 const VERIFY_TIMEOUT_MS = 18_000;
 const FINALIZE_TIMEOUT_MS = 18_000;
@@ -1378,6 +1378,7 @@ Additional guidance:
           maxTokens: rigor === "rigorous" ? 950 : 775,
           temperature: rigor === "rigorous" ? 0.35 : 0.25,
           timeoutMs: CANDIDATE_SWARM_TIMEOUT_MS,
+          maxRetries: 1,
           reasoning: {
             effort: "none",
             exclude: true,
@@ -1433,6 +1434,7 @@ Additional guidance:
           maxTokens: rigor === "rigorous" ? 1_400 : 1_150,
           temperature: 0.1,
           timeoutMs: ELIMINATION_SWARM_TIMEOUT_MS,
+          maxRetries: 1,
           reasoning: {
             effort: rigor === "rigorous" ? "low" : "minimal",
             exclude: true,
