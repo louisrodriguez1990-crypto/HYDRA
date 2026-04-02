@@ -63,6 +63,13 @@ export async function call(
   const client = getClient();
   try {
     const reasoning = normalizeReasoningOptions(modelId, opts.reasoning);
+    const timeoutSignal =
+      !opts.signal &&
+      typeof AbortSignal !== "undefined" &&
+      typeof AbortSignal.timeout === "function" &&
+      typeof opts.timeoutMs === "number"
+        ? AbortSignal.timeout(opts.timeoutMs + 500)
+        : undefined;
     const payload = {
       model: modelId,
       messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
@@ -77,7 +84,7 @@ export async function call(
     const res = (await client.chat.completions.create(payload, {
       maxRetries: opts.maxRetries ?? 0,
       timeout: opts.timeoutMs,
-      signal: opts.signal,
+      signal: opts.signal ?? timeoutSignal,
     })) as OpenAI.Chat.ChatCompletion;
     return res.choices[0]?.message?.content ?? "";
   } catch (err) {

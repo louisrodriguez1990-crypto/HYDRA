@@ -305,8 +305,8 @@ Rules:
   - contradicted -> no-go`;
 
 const FRAME_TIMEOUT_MS = 20_000;
-const CANDIDATE_SWARM_TIMEOUT_MS = 30_000;
-const ELIMINATION_SWARM_TIMEOUT_MS = 32_000;
+const CANDIDATE_SWARM_TIMEOUT_MS = 18_000;
+const ELIMINATION_SWARM_TIMEOUT_MS = 20_000;
 const SYNTHESIZE_TIMEOUT_MS = 22_000;
 const VERIFY_TIMEOUT_MS = 18_000;
 const FINALIZE_TIMEOUT_MS = 18_000;
@@ -1592,6 +1592,7 @@ async function gatherVerificationContext(args: {
 
 async function runFrame(messages: ChatMessage[], rigor: Rigor) {
   const query = messages[messages.length - 1]?.content ?? "";
+  console.log(`[Hydra][Research] frame:start | rigor=${rigor}`);
 
   const raw = await call(
     RESEARCH_MODELS.frame,
@@ -1620,7 +1621,11 @@ Additional guidance:
     }
   );
 
-  return normalizeFrame(parseJSON<Record<string, unknown>>(raw, {}), query);
+  const frame = normalizeFrame(parseJSON<Record<string, unknown>>(raw, {}), query);
+  console.log(
+    `[Hydra][Research] frame:done | axes=${frame.searchAxes.length} | outputShape=${frame.outputShape.slice(0, 80)}`
+  );
+  return frame;
 }
 
 async function runCandidateSwarm(args: {
@@ -1629,6 +1634,9 @@ async function runCandidateSwarm(args: {
   verifierFeedback?: ResearchRetryFeedback;
 }) {
   const { frame, rigor, verifierFeedback } = args;
+  console.log(
+    `[Hydra][Research] candidate-swarm:start | rigor=${rigor} | axes=${Math.min(frame.searchAxes.length, AXIS_COUNT)} | retry=${Boolean(verifierFeedback)}`
+  );
 
   const settled = await Promise.allSettled(
     frame.searchAxes.slice(0, AXIS_COUNT).map(async (axis) => {
@@ -1669,7 +1677,6 @@ ${verifierFeedback
           maxTokens: rigor === "rigorous" ? 950 : 775,
           temperature: rigor === "rigorous" ? 0.35 : 0.25,
           timeoutMs: CANDIDATE_SWARM_TIMEOUT_MS,
-          maxRetries: 1,
           reasoning: {
             effort: "none",
             exclude: true,
@@ -1681,9 +1688,13 @@ ${verifierFeedback
     })
   );
 
-  return settled.flatMap((result) =>
+  const candidates = settled.flatMap((result) =>
     result.status === "fulfilled" && result.value ? [result.value] : []
   );
+  console.log(
+    `[Hydra][Research] candidate-swarm:done | usable=${candidates.length}/${Math.min(frame.searchAxes.length, AXIS_COUNT)}`
+  );
+  return candidates;
 }
 
 async function runEliminationSwarm(args: {
@@ -1692,6 +1703,9 @@ async function runEliminationSwarm(args: {
   rigor: Rigor;
 }) {
   const { frame, candidates, rigor } = args;
+  console.log(
+    `[Hydra][Research] elimination-swarm:start | rigor=${rigor} | candidates=${candidates.length} | judges=${ELIMINATION_JUDGE_COUNT}`
+  );
 
   const settled = await Promise.allSettled(
     ELIMINATION_JUDGES.map(async (judge) => {
@@ -1725,7 +1739,6 @@ Additional guidance:
           maxTokens: rigor === "rigorous" ? 1_400 : 1_150,
           temperature: 0.1,
           timeoutMs: ELIMINATION_SWARM_TIMEOUT_MS,
-          maxRetries: 1,
           reasoning: {
             effort: rigor === "rigorous" ? "low" : "minimal",
             exclude: true,
@@ -1740,16 +1753,27 @@ Additional guidance:
   const eliminationJudgments = settled.flatMap((result) =>
     result.status === "fulfilled" && result.value ? [result.value] : []
   );
+  console.log(
+    `[Hydra][Research] elimination-swarm:done | usable=${eliminationJudgments.length}/${ELIMINATION_JUDGE_COUNT}`
+  );
 
   if (eliminationJudgments.length >= ELIMINATION_QUORUM) {
-    return aggregateConsensus(candidates, eliminationJudgments);
+    const consensus = aggregateConsensus(candidates, eliminationJudgments);
+    console.log(
+      `[Hydra][Research] consensus:done | finalists=${consensus.finalists.length} | rejected=${consensus.rejected.length}`
+    );
+    return consensus;
   }
 
-  return buildHeuristicConsensus(
+  const heuristic = buildHeuristicConsensus(
     candidates,
     eliminationJudgments,
     `Only ${eliminationJudgments.length} of ${ELIMINATION_JUDGE_COUNT} elimination judges returned usable outputs, so Hydra fell back to a heuristic top-4 shortlist.`
   );
+  console.log(
+    `[Hydra][Research] consensus:heuristic | finalists=${heuristic.finalists.length} | rejected=${heuristic.rejected.length}`
+  );
+  return heuristic;
 }
 
 async function runSynthesize(args: {
@@ -2028,6 +2052,9 @@ async function runVerify(args: {
     };
   }
 
+  console.log(
+    `[Hydra][Research] verify:start | rigor=${rigor} | finalists=${finalists.length}`
+  );
   const retrieval = await gatherVerificationContext({ messages, finalists });
   const raw = await call(
     RESEARCH_MODELS.verify,
@@ -2095,8 +2122,12 @@ Additional guidance:
   );
 
   const parsed = parseJSON<Record<string, unknown>>(raw, {});
+  const packet = normalizeVerificationPacket(parsed.packet, finalists, retrieval);
+  console.log(
+    `[Hydra][Research] verify:done | mode=${retrieval.mode} | packet=${packet.length} | external=${retrieval.usedExternalEvidence}`
+  );
   return {
-    packet: normalizeVerificationPacket(parsed.packet, finalists, retrieval),
+    packet,
     retrieval,
   };
 }
@@ -2327,7 +2358,6 @@ async function selectVerifiedWinners(args: {
   const { messages, frame, finalists, initialSelectedCandidateIds, rigor } = args;
   const finalistMap = new Map(finalists.map((candidate) => [candidate.candidateId, candidate]));
   const finalistOrder = finalists.map((candidate) => candidate.candidateId);
-  const verificationMap = new Map<string, ResearchVerificationPacketEntry>();
 
   const selectedCandidateIds =
     initialSelectedCandidateIds.length > 0
@@ -2337,26 +2367,15 @@ async function selectVerifiedWinners(args: {
         )
       : finalistOrder.slice(0, SELECTED_COUNT);
 
-  const verifyCandidateIds = async (candidateIds: string[]) => {
-    const finalistsToVerify = candidateIds
-      .map((candidateId) => finalistMap.get(candidateId))
-      .filter((candidate): candidate is ResearchFinalist => Boolean(candidate))
-      .filter((candidate) => !verificationMap.has(candidate.candidateId));
-
-    if (finalistsToVerify.length === 0) return;
-    const result = await runVerify({
-      messages,
-      frame,
-      finalists: finalistsToVerify,
-      rigor,
-    });
-
-    for (const entry of result.packet) {
-      verificationMap.set(entry.candidateId, entry);
-    }
-  };
-
-  await verifyCandidateIds(selectedCandidateIds);
+  const verificationResult = await runVerify({
+    messages,
+    frame,
+    finalists,
+    rigor,
+  });
+  const verificationMap = new Map(
+    verificationResult.packet.map((entry) => [entry.candidateId, entry] as const)
+  );
 
   const viableSelected: string[] = [];
   for (const candidateId of selectedCandidateIds) {
@@ -2369,7 +2388,6 @@ async function selectVerifiedWinners(args: {
   if (viableSelected.length < SELECTED_COUNT) {
     for (const candidateId of finalistOrder) {
       if (viableSelected.includes(candidateId)) continue;
-      await verifyCandidateIds([candidateId]);
       const status = verificationMap.get(candidateId)?.verificationStatus;
       if (status && status !== "contradicted") {
         viableSelected.push(candidateId);
@@ -2385,6 +2403,10 @@ async function selectVerifiedWinners(args: {
       (entry, index, entries) =>
         entries.findIndex((item) => item.candidateId === entry.candidateId) === index
     );
+
+  console.log(
+    `[Hydra][Research] verify:selection | selected=${viableSelected.join(",") || "none"} | contradicted=${verificationPacket.filter((entry) => entry.verificationStatus === "contradicted").length}`
+  );
 
   const verificationFallbackReason =
     viableSelected.length >= SELECTED_COUNT
