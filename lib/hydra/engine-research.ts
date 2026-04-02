@@ -2103,21 +2103,46 @@ Additional guidance:
   };
 }
 
-function formatDecisionLabel(decision: ResearchGoNoGoDecision) {
-  return decision === "no-go" ? "No-Go" : decision === "go" ? "Go" : "Watch";
+function formatDecisionForUser(decision: ResearchGoNoGoDecision | undefined) {
+  if (decision === "go") return "Go";
+  if (decision === "no-go") return "No-go";
+  return "Watchlist";
 }
 
 function sanitizeResearchUserText(value: string) {
   return value
+    .replace(/(^|\n)\s*\d+\.\s*/g, "$1")
+    .replace(/(^|\n)\s*[-*]\s*/g, "$1")
     .replace(/\[(A\d+)\]\s*/g, "")
     .replace(/\bA\d+\b/g, "")
+    .replace(/\r/g, " ")
+    .replace(/\n+/g, " ")
     .replace(/\s{2,}/g, " ")
     .replace(/\s+([,.;:])/g, "$1")
     .trim();
 }
 
+function compactResearchLine(value: string, fallback: string, maxLength = 220) {
+  const sanitized = sanitizeResearchUserText(value || fallback);
+  if (!sanitized) return sanitizeResearchUserText(fallback);
+
+  const withoutLeadNumbering = sanitized.replace(/^(?:\d+\.\s*)+/, "").trim();
+  if (withoutLeadNumbering.length <= maxLength) {
+    return withoutLeadNumbering;
+  }
+
+  const clipped = withoutLeadNumbering.slice(0, maxLength);
+  const boundary = Math.max(
+    clipped.lastIndexOf(". "),
+    clipped.lastIndexOf("; "),
+    clipped.lastIndexOf(", ")
+  );
+
+  return `${(boundary > 80 ? clipped.slice(0, boundary) : clipped).trim()}.`;
+}
+
 function firstSentence(value: string, fallback: string) {
-  const sanitized = sanitizeResearchUserText(value);
+  const sanitized = compactResearchLine(value, fallback, 260);
   if (!sanitized) return fallback;
   const match = sanitized.match(/.+?[.!?](?:\s|$)/);
   return match?.[0]?.trim() || sanitized;
@@ -2140,12 +2165,14 @@ function formatThresholdForUser(
   candidate: ResearchFinalist
 ) {
   if (verification?.verificationStatus === "confirmed") {
-    return sanitizeResearchUserText(
-      verification.viabilityThreshold || candidate.measurementPlan || "Grounded threshold not captured."
+    return compactResearchLine(
+      verification.viabilityThreshold || candidate.measurementPlan,
+      "Grounded threshold not captured.",
+      240
     );
   }
 
-  return `Not grounded yet. Validate with: ${softenUnverifiedLine(
+  return `Still needs live validation. Start by checking: ${softenUnverifiedLine(
     candidate.measurementPlan,
     "a live measurement plan tied to the core mechanism"
   )}`;
@@ -2156,10 +2183,40 @@ function formatFalsifierForUser(
   candidate: ResearchFinalist
 ) {
   const source = verification?.falsificationCriterion || candidate.testOrFalsifier;
-  return softenUnverifiedLine(
-    source,
-    "If the measurement plan fails to support the mechanism, reject the idea."
+  return compactResearchLine(
+    softenUnverifiedLine(
+      source,
+      "If the measurement plan fails to support the mechanism, reject the idea."
+    ),
+    "If the measurement plan fails to support the mechanism, reject the idea.",
+    220
   );
+}
+
+function buildOtherFinalistsLine(others: ResearchFinalist[]) {
+  if (others.length === 0) {
+    return "The rest of the field didn’t add a stronger alternative.";
+  }
+
+  const parts = others.map((candidate) => {
+    const title = sanitizeResearchUserText(candidate.candidate) || "another finalist";
+    const objection = firstSentence(
+      candidate.mainObjections[0] || "",
+      "it carried more unresolved objections."
+    ).replace(/^it carried\s+/i, "");
+
+    return `${title} had ${objection}`;
+  });
+
+  return `The others fell short because ${parts.join("; ")}.`;
+}
+
+function buildResearchIntro(packet: ResearchVerificationPacketEntry[]) {
+  if (packet.some((entry) => entry.verificationStatus === "confirmed")) {
+    return "Here are the two strongest opportunities after the tournament and verification pass.";
+  }
+
+  return "Here are the two strongest leads right now. They’re promising, but they still need real-world validation before you’d act on them.";
 }
 
 function buildVerificationFallbackAnswer(args: {
@@ -2184,48 +2241,35 @@ function buildVerificationFallbackAnswer(args: {
     const title = sanitizeResearchUserText(candidate.candidate) || `Winner ${index + 1}`;
     const mechanism =
       verification?.verificationStatus === "confirmed"
-        ? sanitizeResearchUserText(candidate.mechanism)
-        : firstSentence(
+        ? compactResearchLine(candidate.mechanism, "Grounded mechanism not captured.", 260)
+        : compactResearchLine(
             candidate.mechanism,
-            "The mechanism still needs live validation before it should be treated as executable."
+            "The mechanism still needs live validation before it should be treated as executable.",
+            200
           );
-    const whyItSurvived = firstSentence(
+    const whyItSurvived = compactResearchLine(
       candidate.advancedBecause,
-      "It survived because it kept more of the mechanism and constraint story intact than the rest of the field."
+      "It kept more of the mechanism and constraint story intact than the rest of the field.",
+      180
     );
     return `${index + 1}. ${title}
-Mechanism: ${mechanism}
-Why it survived: ${whyItSurvived}
-Decision: ${formatDecisionLabel(verification?.goNoGoDecision ?? "watch")}
-Threshold: ${formatThresholdForUser(verification, candidate)}
-Falsifier: ${formatFalsifierForUser(verification, candidate)}`;
+How it works: ${mechanism}
+Why it made the cut: ${whyItSurvived}
+Status: ${formatDecisionForUser(verification?.goNoGoDecision)}
+What you’d need to see before acting: ${formatThresholdForUser(verification, candidate)}
+What would disprove it: ${formatFalsifierForUser(verification, candidate)}`;
   });
-
-  const otherLine =
-    others.length > 0
-      ? `Other finalists were weaker because ${others
-          .map((candidate) => {
-            const title = sanitizeResearchUserText(candidate.candidate) || "another finalist";
-            const objection = firstSentence(
-              candidate.mainObjections[0] || "",
-              "it carried more unresolved objections."
-            );
-            return `${title} carried ${objection}`;
-          })
-          .join("; ")}.`
-      : "No other finalists were available for contrast.";
 
   const singleWinnerLine = args.explicitNoSecondWinner
     ? "No second candidate cleared verification strongly enough to surface as a winner."
     : "";
 
-  const calibrationLine = args.verificationPacket.some(
-    (entry) => entry.verificationStatus === "plausible_but_unverified"
-  )
-    ? "These winners are still hypotheses under validation, not execution-ready recommendations."
-    : "";
-
-  return [calibrationLine, winnerLines.join("\n\n"), singleWinnerLine, otherLine]
+  return [
+    buildResearchIntro(args.verificationPacket),
+    winnerLines.join("\n\n"),
+    singleWinnerLine,
+    buildOtherFinalistsLine(others),
+  ]
     .filter(Boolean)
     .join("\n\n");
 }
