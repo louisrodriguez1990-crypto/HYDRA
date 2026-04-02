@@ -37,6 +37,24 @@ function getClient(): OpenAI {
   return _client;
 }
 
+function normalizeReasoningOptions(
+  modelId: string,
+  reasoning: CallOptions["reasoning"] | undefined
+) {
+  if (!reasoning) return undefined;
+
+  if (modelId.startsWith("stepfun/")) {
+    const effort =
+      !reasoning.effort || reasoning.effort === "none"
+        ? "minimal"
+        : reasoning.effort;
+
+    return { effort };
+  }
+
+  return reasoning;
+}
+
 export async function call(
   modelId: string,
   messages: { role: string; content: string }[],
@@ -44,13 +62,14 @@ export async function call(
 ): Promise<string> {
   const client = getClient();
   try {
+    const reasoning = normalizeReasoningOptions(modelId, opts.reasoning);
     const payload = {
       model: modelId,
       messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
       max_tokens: opts.maxTokens ?? 4096,
       temperature: opts.temperature ?? 0.7,
       stream: false as const,
-      ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
+      ...(reasoning ? { reasoning } : {}),
     } as OpenAI.Chat.ChatCompletionCreateParams & {
       reasoning?: CallOptions["reasoning"];
     };

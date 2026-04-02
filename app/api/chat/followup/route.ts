@@ -52,8 +52,10 @@ export async function POST(req: NextRequest) {
 
     const rigor = normalizeRigor(body.rigor);
     const start = Date.now();
+    const followupLabel =
+      mode === "three_phase" ? "three_phase" : mode === "research" ? "research" : topology;
 
-    console.log(`[Hydra] followup ${mode === "three_phase" ? "three_phase" : topology} | rigor: ${rigor}`);
+    console.log(`[Hydra] followup ${followupLabel} | rigor: ${rigor}`);
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
